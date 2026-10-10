@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copy stdin to an OSC 52 terminal clipboard, echoing the input by default.
+set -euo pipefail
+
+version=1.0.0
+usage() {
+    printf '%s\n' 'Usage: command | clip [--quiet]' \
+        'Print stdin unchanged to stdout and copy it through OSC 52 to the controlling terminal.' \
+        '  --quiet    Copy without printing stdin (formerly the default).' \
+        '  -h, --help Show help; do not read stdin.' \
+        '  --version  Print the version; do not read stdin.' \
+        'Requires Bash, GNU base64, and a controlling terminal (/dev/tty).'
+}
+
+quiet=0
+if (( $# == 1 )); then
+    case $1 in
+        -h|--help) usage; exit 0 ;;
+        --version) printf 'clip %s\n' "$version"; exit 0 ;;
+        --quiet) quiet=1 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+elif (( $# != 0 )); then
+    usage >&2
+    exit 2
+fi
+
+# The encoded form can contain NULs and trailing newlines in its source. Retain
+# the exact bytes by decoding it for stdout; do not store raw stdin in a shell
+# variable. No clipboard sequence is emitted if encoding or printing fails.
+encoded=$(base64 -w0)
+if (( ! quiet )); then
+    printf '%s' "$encoded" | base64 --decode
+fi
+
+# Never mix OSC 52 control bytes into stdout (which may be redirected/piped).
+# In a noninteractive context, stdout has already been reproduced, but copying
+# cannot work without a controlling terminal: fail visibly instead of lying.
+if ! printf '\033]52;c;%s\a' "$encoded" > /dev/tty; then
+    printf '%s\n' 'clip: cannot write to /dev/tty; clipboard was not set' >&2
+    exit 1
+fi
