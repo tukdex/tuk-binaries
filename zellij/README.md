@@ -3,7 +3,7 @@
 Locally compiled static PIE build of [Zellij](https://zellij.dev) 0.45.1, MIT
 licensed (see [LICENSE.md](LICENSE.md)). Not an official Zellij release artefact.
 
-Release assets (`https://github.com/tukdex/tuk-binaries/releases/tag/zellij-binary-v0.45.1`):
+Release assets (`https://github.com/tukdex/tuk-binaries/releases/tag/zellij-binary-v0.45.1-r2`):
 
 - `zellij-0.45.1-linux-x86_64-static`
 - `zellij-0.45.1.sha256`: `d006c521dcb475a6005d741e9dd7c5758e5a23b28dd60a5c10cebfa4876319dd`
@@ -22,14 +22,14 @@ closing your SSH session.
 set -euo pipefail; umask 077
 [ "$(id -u)" = 0 ] || { echo 'run as root' >&2; exit 1; }
 stage=$(mktemp -d /root/zellij-stage.XXXXXX); cd "$stage"
-u=https://github.com/tukdex/tuk-binaries/releases/download/zellij-binary-v0.45.1
+u=https://github.com/tukdex/tuk-binaries/releases/download/zellij-binary-v0.45.1-r2
 for f in zellij-0.45.1-linux-x86_64-static zellij-0.45.1.sha256 zellij-0.45.1-LICENSE.md install-zellij; do
   curl --proto '=https' --tlsv1.2 -fSLo "$f" "$u/$f"
 done
 # Verify everything against pinned values BEFORE running anything.
 sha256sum -c - <<'SUMS'
 d006c521dcb475a6005d741e9dd7c5758e5a23b28dd60a5c10cebfa4876319dd  zellij-0.45.1-linux-x86_64-static
-871987b1cd7dfc4050f3478238d167af5931631cee8f74aad3894b5d78c6102f  install-zellij
+2085ffbe0266b95e48d9a520416fde18d924740880ba39f8e78614fa689b3dff  install-zellij
 606009ef86a4ad18d34cf2621ed4f72ea063e374fb5484e81574f71c81bdc2f9  zellij-0.45.1.sha256
 9aa6c363b18a48eeecbffe13ff390c76ede2c90eb37ba17dfbbaffc42892d87d  zellij-0.45.1-LICENSE.md
 SUMS

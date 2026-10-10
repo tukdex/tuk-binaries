@@ -60,4 +60,8 @@ actual=$(sha256sum -- "$tmp")
 chmod 0755 -- "$tmp"
 # Hard-link publication is atomic and refuses a destination created meanwhile.
 ln -T -- "$tmp" "$dest/zellij" || fail 'installation refused (destination appeared)'
-printf 'Installed Zellij %s at %s/zellij\nSHA-256 %s\n' "$version" "$dest" "$expected"
+# The install is committed. A reporting failure (closed pipe, full disk) must not
+# turn it into a reported failure, so ignore SIGPIPE and write errors from here on.
+trap '' PIPE
+printf 'Installed Zellij %s at %s/zellij\nSHA-256 %s\n' "$version" "$dest" "$expected" 2>/dev/null || true
+exit 0

@@ -8,7 +8,7 @@ assets only; they are not stored in Git.
 
 | Tool | Release | Platform |
 |---|---|---|
-| [Zellij](zellij/README.md) 0.45.1 | `zellij-binary-v0.45.1` | Linux x86-64, static PIE |
+| [Zellij](zellij/README.md) 0.45.1 | `zellij-binary-v0.45.1-r2` | Linux x86-64, static PIE |
 
 Always verify a download against a checksum you obtained independently, and never
 pipe a download into a shell. The installers refuse to overwrite existing files.
