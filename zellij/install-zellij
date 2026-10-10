@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Install the checksum-verified Zellij binary from trusted local staging.
+# Never downloads, never executes the binary, never overwrites.
+set -euo pipefail
+
+version=0.45.1
+asset=zellij-$version-linux-x86_64-static
+
+usage() {
+    printf '%s\n' 'Usage: install-zellij SOURCE ABSOLUTE_DESTINATION_DIRECTORY' \
+        "Install Zellij $version (Linux x86-64) as DESTINATION/zellij, mode 0755." \
+        'SOURCE must match the SHA-256 in the adjacent manifest. Refuses existing' \
+        'files and symlinks. Run only from root-owned, non-writable staging.'
+}
+fail() { printf 'install-zellij: %s\n' "$*" >&2; exit 1; }
+
+# Path must be owned by root or the invoking user and not group/other writable,
+# so an unprivileged user cannot substitute it during a root installation.
+trusted() {
+    local owner mode
+    read -r owner mode < <(stat -c '%u %a' -- "$1") || fail "cannot stat $1"
+    [[ $owner == 0 || $owner == "$EUID" ]] || fail "untrusted owner: $1"
+    (( (8#$mode & 8#022) == 0 )) || fail "group/other-writable: $1"
+}
+
+if (( $# == 1 )) && [[ $1 == -h || $1 == --help ]]; then
+    usage
+    exit 0
+fi
+if (( $# != 2 )); then usage >&2; exit 2; fi
+src=$1
+dest=$2
+
+[[ $(uname -s) == Linux ]] || fail 'Linux required'
+[[ $(uname -m) == x86_64 ]] || fail 'x86_64 required'
+[[ $src != -* && $dest == /* ]] || fail 'source must not start with "-"; destination must be absolute'
+[[ -f $src && ! -L $src ]] || fail 'source must be a regular, non-symlink file'
+[[ -d $dest ]] || fail 'destination directory does not exist'
+[[ $dest == "$(realpath -e -- "$dest")" ]] || fail 'use the canonical destination path, without symlinks or trailing slash'
+[[ ! -e $dest/zellij && ! -L $dest/zellij ]] || fail "$dest/zellij already exists; review it separately"
+
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+manifest=$here/$version.sha256
+[[ -f $manifest && ! -L $manifest ]] || fail 'manifest missing or a symlink'
+trusted "$here"; trusted "$manifest"
+trusted "$(dirname -- "$(realpath -e -- "$src")")"; trusted "$src"
+trusted "$dest"
+
+(( $(wc -l < "$manifest") == 1 )) || fail 'manifest must contain exactly one line'
+read -r expected filename extra < "$manifest"
+[[ $expected =~ ^[0-9a-f]{64}$ && -z $extra ]] || fail 'invalid manifest checksum'
+[[ $filename == "$asset" ]] || fail 'manifest asset name mismatch'
+
+# Hash the private copy, not the source, so verified bytes are what is published.
+tmp=$(mktemp -- "$dest/.zellij.XXXXXXXX")
+trap 'rm -f -- "$tmp"' EXIT
+cp -- "$src" "$tmp"
+actual=$(sha256sum -- "$tmp")
+[[ ${actual%% *} == "$expected" ]] || fail 'checksum mismatch; nothing installed'
+chmod 0755 -- "$tmp"
+# Hard-link publication is atomic and refuses a destination created meanwhile.
+ln -T -- "$tmp" "$dest/zellij" || fail 'installation refused (destination appeared)'
+printf 'Installed Zellij %s at %s/zellij\nSHA-256 %s\n' "$version" "$dest" "$expected"
