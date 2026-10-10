@@ -1,8 +1,8 @@
 # clip 1.0.0 (Linux)
 
 Standalone MIT-licensed Bash script for terminal clipboard support through OSC 52.
-Maintained source and tests live in private tuk-toolbox; only generic source,
-installer, checksum and licence are public. No private system details are included.
+This public package contains only the generic source, installer, checksum and
+licence; no private infrastructure configuration or operational data.
 
 ## Usage
 
