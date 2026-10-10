@@ -9,7 +9,7 @@ asset=clip-$version
 usage() {
     printf '%s\n' 'Usage: install-clip SOURCE ABSOLUTE_DESTINATION_DIRECTORY' \
         "Install clip $version as DESTINATION/clip at mode 0755." \
-        'SOURCE must match the adjacent SHA-256 manifest.' \
+        'SOURCE must match the adjacent SHA-256 manifest (1.0.0.sha256 or clip-1.0.0.sha256).' \
         'Refuses existing files and symlinks; run from trusted private staging.'
 }
 fail() { printf 'install-clip: %s\n' "$*" >&2; exit 1; }
@@ -33,7 +33,14 @@ dest=$2
 [[ ! -e $dest/clip && ! -L $dest/clip ]] || fail "$dest/clip already exists; do not overwrite"
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-manifest=$here/$version.sha256
+# Accept exactly one manifest: 1.0.0.sha256 (Git) or clip-1.0.0.sha256 (Release).
+# If both exist the choice would be ambiguous, so refuse rather than pick one.
+m_git=$here/$version.sha256
+m_rel=$here/$asset.sha256
+if [[ -e $m_git || -L $m_git ]] && [[ -e $m_rel || -L $m_rel ]]; then
+    fail "both $version.sha256 and $asset.sha256 exist; keep exactly one"
+fi
+if [[ -e $m_git || -L $m_git ]]; then manifest=$m_git; else manifest=$m_rel; fi
 [[ -f $manifest && ! -L $manifest ]] || fail 'manifest missing or symlinked'
 trusted "$here"; trusted "$manifest"
 trusted "$(dirname -- "$(realpath -e -- "$src")")"; trusted "$src"

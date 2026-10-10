@@ -17,7 +17,7 @@ acceptance cannot be confirmed; terminal and multiplexer settings or size
 limits may prevent it. Requires Linux, Bash and GNU base64 (-w0 and --decode).
 Clipboard content is never redacted: avoid copying sensitive output.
 
-## Public installation (after merging this PR)
+## Public installation
 
 Review the SHA-256 pins independently. As root, download to a protected
 temporary directory and verify ALL files before running any downloaded code.
@@ -36,7 +36,7 @@ sha256sum -c - <<'SUMS'
 217eceba1dcc86e4ec3a9be2c85b3aaca75056f00bec0c7183332d457dcae1db  clip-1.0.0
 5c12abfbe6ba1ff9905e4185b36dd18e385923af65d5e5f3aa761e644638611d  1.0.0.sha256
 e8f14a93d830587fca1511c5bf798fe291f5f2783b3b8ca46c2cbd7b9aa9581c  LICENSE.md
-dd62606a5d1ead43553cb8d460bf1178550efa47bd1ff2165b9a37248ff79cc3  install-clip
+a37b8c95e6bd4fcfcaa072808f62af0772b2704f031e0d6c62eae31fdc88bee9  install-clip
 SUMS
 bash install-clip clip-1.0.0 /usr/local/bin
 printf 'Staging retained: %s\n' "$stage"
@@ -48,10 +48,16 @@ terminal: printf 'clipboard test\n' | clip. Check type -a clip before install.
 The installer refuses symlinks and existing destinations, enforces trusted
 staging permissions and checksum, and never executes the payload itself.
 
-## Optional GitHub Release
+## GitHub Release
 
-A separate versioned release can be published with tag clip-v1.0.0 and four
-assets: clip-1.0.0; clip-1.0.0.sha256 (copy of 1.0.0.sha256);
-clip-1.0.0-LICENSE.md (copy of LICENSE.md); and install-clip.
-This release is NOT claimed published. Verify anonymous downloads and every
-asset checksum before announcing it; do not replace release assets in place.
+Current: [clip-v1.0.0-r2](https://github.com/tukdex/tuk-binaries/releases/tag/clip-v1.0.0-r2)
+with four assets: clip-1.0.0; clip-1.0.0.sha256 (copy of 1.0.0.sha256);
+clip-1.0.0-LICENSE.md (copy of LICENSE.md); and install-clip. The clip script is
+byte-identical to 1.0.0 (SHA-256 above); r2 only corrects the installer, which now
+accepts exactly one adjacent manifest named either 1.0.0.sha256 or
+clip-1.0.0.sha256 and refuses if both exist. Release installs need no renaming.
+
+[clip-v1.0.0](https://github.com/tukdex/tuk-binaries/releases/tag/clip-v1.0.0) is
+superseded: its installer only accepts 1.0.0.sha256, so its manifest asset needed
+renaming. Its assets are left unchanged; use r2. Release assets are never
+replaced in place; a correction gets a new revision tag.

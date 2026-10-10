@@ -8,7 +8,7 @@ clip is versioned, auditable Bash source in Git, with its own checksum and insta
 | Tool | Release | Platform |
 |---|---|---|
 | [Zellij](zellij/README.md) 0.45.1 | `zellij-binary-v0.45.1-r2` | Linux x86-64, static PIE |
-| [clip](clip/README.md) 1.0.0 | Public source package; optional Release pending | Linux, Bash, GNU base64 |
+| [clip](clip/README.md) 1.0.0 | [`clip-v1.0.0-r2`](https://github.com/tukdex/tuk-binaries/releases/tag/clip-v1.0.0-r2) | Linux, Bash, GNU base64 |
 
 Always verify a download against a checksum you obtained independently, and never
 pipe a download into a shell. The installers refuse to overwrite existing files.
