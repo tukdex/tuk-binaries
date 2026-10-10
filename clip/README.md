@@ -48,10 +48,14 @@ terminal: printf 'clipboard test\n' | clip. Check type -a clip before install.
 The installer refuses symlinks and existing destinations, enforces trusted
 staging permissions and checksum, and never executes the payload itself.
 
-## Optional GitHub Release
+## GitHub Release
 
-A separate versioned release can be published with tag clip-v1.0.0 and four
-assets: clip-1.0.0; clip-1.0.0.sha256 (copy of 1.0.0.sha256);
-clip-1.0.0-LICENSE.md (copy of LICENSE.md); and install-clip.
-This release is NOT claimed published. Verify anonymous downloads and every
-asset checksum before announcing it; do not replace release assets in place.
+Published as [clip-v1.0.0](https://github.com/tukdex/tuk-binaries/releases/tag/clip-v1.0.0)
+with four assets: clip-1.0.0; clip-1.0.0.sha256 (copy of 1.0.0.sha256);
+clip-1.0.0-LICENSE.md (copy of LICENSE.md); and install-clip. Anonymous downloads
+were verified against the SHA-256 values above.
+
+install-clip expects the manifest named 1.0.0.sha256 and the script named
+clip-1.0.0 in its own directory, so rename the downloaded clip-1.0.0.sha256 to
+1.0.0.sha256 before installing from release assets. Do not replace release assets
+in place; publish a revision tag if a correction is necessary.
