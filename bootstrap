@@ -43,16 +43,29 @@ while (( $# )); do
 done
 [[ -t 0 && -t 1 ]] || prompt=0
 
+valid_name() { [[ $1 =~ ^[a-z][a-z0-9-]{0,31}$ ]]; }
 names=()
 if [[ -n $install_list ]]; then
-    IFS=, read -ra names <<< "$install_list"
+    IFS=, read -ra raw_names <<< "$install_list"
+    for n in "${raw_names[@]}"; do
+        if [[ -z $n ]]; then continue; fi   # tolerate stray commas: "clip,,zellij", "clip,"
+        valid_name "$n" || fail "invalid tool name '$n'"
+        names+=("$n")
+    done
+    (( ${#names[@]} )) || fail '--install needs at least one tool name'
 fi
-valid_name() { [[ $1 =~ ^[a-z][a-z0-9-]{0,31}$ ]]; }
-for n in "${names[@]}"; do valid_name "$n" || fail "invalid tool name '$n'"; done
 
-# Report every missing prerequisite at once.
-# Keep in sync with REQUIRED_TOOLS in tuk/tuk (a test compares them).
-need=(curl sha256sum stat mktemp cp mv ln rm chmod install realpath flock date sort mkdir dirname uname cat head timeout)
+# Locate this checkout using shell builtins only (no external commands yet).
+src=${BASH_SOURCE[0]}
+[[ $src == */* ]] || src=./$src
+here=$(cd -- "${src%/*}" && pwd -P)
+for f in tuk/tuk tuk/packages.conf; do
+    [[ -f $here/$f && ! -L $here/$f ]] || fail "$f is missing from this checkout or is not a regular file"
+done
+
+# One maintained prerequisite list: tuk itself. Report every missing tool at once.
+mapfile -t need < <(bash "$here/tuk/tuk" _required-tools 2> /dev/null) || true
+(( ${#need[@]} )) || fail 'could not read the prerequisite list from tuk/tuk'
 (( EUID == 0 )) || need+=(sudo)
 missing=()
 for c in "${need[@]}"; do command -v -- "$c" > /dev/null 2>&1 || missing+=("$c"); done
@@ -66,14 +79,13 @@ fi
 
 [[ $(uname -s) == Linux ]] || fail 'Linux is required'
 
-here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-for f in tuk/tuk tuk/packages.conf; do
-    [[ -f $here/$f && ! -L $here/$f ]] || fail "$f is missing from this checkout or is not a regular file"
-done
-
 # Validate the catalogue and the requested tools BEFORE changing the system.
-catalogue_rows=$(bash "$here/tuk/tuk" _catalogue-names "$here/tuk/packages.conf" 2> /dev/null) \
-    || { bash "$here/tuk/tuk" _catalogue-names "$here/tuk/packages.conf" > /dev/null || true; fail 'catalogue is invalid; nothing was installed'; }
+errfile=$(mktemp)
+trap 'rm -f -- "$errfile"' EXIT
+if ! catalogue_rows=$(bash "$here/tuk/tuk" _catalogue-names "$here/tuk/packages.conf" 2> "$errfile"); then
+    cat -- "$errfile" >&2
+    fail 'catalogue is invalid; nothing was installed'
+fi
 known=()
 while IFS=$'\t' read -r kname _ _; do known+=("$kname"); done <<< "$catalogue_rows"
 check_known() {
@@ -90,6 +102,9 @@ if (( ${#names[@]} == 0 && prompt )); then
     read -ra names <<< "$answer"
     for n in "${names[@]}"; do valid_name "$n" || fail "invalid tool name '$n'; nothing was installed"; check_known "$n"; done
 fi
+
+# Refuse early, with exact guidance, if the destination directories are not trustworthy.
+bash "$here/tuk/tuk" _check-destination || fail 'nothing was installed'
 
 priv=()
 if (( EUID != 0 )); then
