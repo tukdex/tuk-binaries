@@ -4,6 +4,11 @@
 # Nothing is downloaded here; tool downloads are done later by tuk, against
 # the SHA-256 pins in this checkout's tuk/packages.conf.
 set -euo pipefail
+# First, before any array expansion that older Bash would reject under set -u.
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
+    echo 'bootstrap: Bash 4.4 or newer is required' >&2
+    exit 1
+fi
 
 usage() {
     cat <<'EOF'
@@ -45,12 +50,9 @@ fi
 valid_name() { [[ $1 =~ ^[a-z][a-z0-9-]{0,31}$ ]]; }
 for n in "${names[@]}"; do valid_name "$n" || fail "invalid tool name '$n'"; done
 
-[[ $(uname -s) == Linux ]] || fail 'Linux is required'
-(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )) || fail 'Bash 4.4 or newer is required'
-
 # Report every missing prerequisite at once.
 # Keep in sync with REQUIRED_TOOLS in tuk/tuk (a test compares them).
-need=(curl sha256sum stat mktemp cp mv ln rm chmod install realpath flock date sort)
+need=(curl sha256sum stat mktemp cp mv ln rm chmod install realpath flock date sort mkdir dirname uname cat head timeout)
 (( EUID == 0 )) || need+=(sudo)
 missing=()
 for c in "${need[@]}"; do command -v -- "$c" > /dev/null 2>&1 || missing+=("$c"); done
@@ -61,6 +63,8 @@ if (( ${#missing[@]} )); then
     fi
     exit 1
 fi
+
+[[ $(uname -s) == Linux ]] || fail 'Linux is required'
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 for f in tuk/tuk tuk/packages.conf; do
@@ -95,6 +99,9 @@ fi
 
 # Test prefix mirrors tuk's own (refused for root inside tuk).
 if [[ -n ${TUK_TEST_PREFIX:-} ]]; then bin_dir=$TUK_TEST_PREFIX/bin; else bin_dir=/usr/local/bin; fi
+
+# Authenticate sudo once, before anything is changed.
+if (( ${#priv[@]} )); then sudo -v || fail 'sudo authentication failed; nothing was installed'; fi
 
 # The clone's tuk installs itself and the catalogue; it will not overwrite
 # anything different unless --upgrade-manager is given for an unmodified tuk.

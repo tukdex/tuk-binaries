@@ -31,8 +31,8 @@ Scripted provisioning: `./bootstrap --install clip,zellij` (add `--no-prompt`
 to guarantee no questions). Without `--install`, a non-interactive run installs
 the manager only.
 
-Requirements: Linux, Bash 4.4+, `curl`, GNU coreutils, `flock` (util-linux) and
-either root or `sudo`. Bootstrap reports every missing prerequisite at once; on
+Requirements: Linux, Bash 4.4+, `curl`, GNU coreutils (including `timeout`), `flock`
+(util-linux) and either root or `sudo` (`sudo` authenticates once, up front). Bootstrap reports every missing prerequisite at once; on
 Debian: `apt-get install curl coreutils util-linux sudo`.
 
 ## What it changes
@@ -71,7 +71,13 @@ only for GitHub release downloads (`github.com`, which redirects to GitHub's dow
    automatically (upgrades are not implemented).
 5. **Verified before reported.** `tuk` re-checks the installed bytes, mode (0755)
    and owner, and only then writes the record and says "Installed".
-6. **Catalogue is data.** `packages.conf` is parsed line by line with strict
+6. **Trusted locations.** Before reading the catalogue or record, or installing into
+   `/usr/local/bin`, `tuk` checks every directory from `/` down: each must be
+   owned by root and not writable by group or others (a root-owned sticky
+   directory such as `/tmp` is tolerated as an ancestor). Symlinks on the path
+   must be root-owned and sit in trusted directories, and the resolved path is
+   checked as well. Anything else is refused with the offending path named.
+7. **Catalogue is data.** `packages.conf` is parsed line by line with strict
    per-field patterns. It is never sourced or evaluated; unknown keys, bad
    hashes or odd characters make the whole file invalid. Download URLs are built
    from a fixed base plus the validated tag and asset name.
@@ -124,16 +130,25 @@ hash. Until then, upgrade by hand: move the old file aside, then `tuk install`.
 
 ## Manager upgrades and removal
 
-Re-running `./bootstrap` is safe: identical files are left alone, and a different
-`tuk` is refused. `./bootstrap --upgrade-manager` replaces an older tuk only if
-it is exactly what tuk previously recorded (never a locally edited or foreign
-file). Remove a tool with `rm /usr/local/bin/<tool>`, then delete its line from
+Re-running `./bootstrap` is safe: identical files are left alone. If the installed
+`tuk` or catalogue differs from this checkout, bootstrap stops and says which one
+changed; replacing the catalogue changes which releases and SHA-256 values the
+host trusts, so that always needs the explicit `./bootstrap --upgrade-manager`
+after you have reviewed the checkout. The flag replaces a file only if it is exactly
+what tuk previously recorded (right content, mode 0755/0644, root-owned); an edited,
+foreign or unrecorded file is never replaced, with or without the flag. Both files
+are decided before either is touched, and if the manager step fails after the
+catalogue was replaced, the previous catalogue is restored. Remove a tool with `rm /usr/local/bin/<tool>`, then delete its line from
 `/var/lib/tuk/installed.tsv` (or leave it; the state will read `missing`).
 
 ## Limitations
 
 SHA-256 pins prove the bytes equal the reviewed build, not that it is defect-free.
-`tuk` assumes the destination directory is root-controlled. Tool licences are in
+Directories that are not root-controlled are refused rather than worked around.
+On older Debian releases `/usr/local/bin` and `/usr/local/lib` can ship as
+`root:staff` mode 2775 (group-writable); `tuk` and the tool installers then stop and
+name the directory. Review the `staff` group membership and, if appropriate, run
+`chmod g-w` on it yourself; `tuk` never changes system directory permissions. Tool licences are in
 their directories in this repository; `tuk` does not install them. The `sudo`
 path is verified by review, not by the automated tests, which run unprivileged
 against a scratch prefix.
