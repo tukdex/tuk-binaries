@@ -20,7 +20,7 @@ DONE_LIST=()
 # Rollback is armed only after this run has published the file (see apply_managed),
 # and identifies it by inode as well as hash, so a file this run did not write is
 # never removed or overwritten.
-ROLLBACK_SRC=''; ROLLBACK_DEST=''; ROLLBACK_SHA=''; ROLLBACK_VER=''; ROLLBACK_INO=''
+ROLLBACK_SRC=''; ROLLBACK_DEST=''; ROLLBACK_SHA=''; ROLLBACK_VER=''; ROLLBACK_INO=''; ROLLBACK_PUB_SHA=''
 ROLLBACK_NEW_DEST=''; ROLLBACK_NEW_SHA=''; ROLLBACK_NEW_INO=''
 PREV_COPY=''; PREV_SHA=''; PREV_VER=''   # prepared by cmd_self_install, armed at publication
 LOCK_HELD=0
@@ -32,8 +32,12 @@ cleanup() {
     fi
     if (( rc != 0 )) && [[ -n $ROLLBACK_SRC ]]; then
         local t
+        # Restore only over exactly what this run published: same inode (not replaced) and
+        # same content (not modified in place). Otherwise leave it and say why.
         if ! is_our_file "$ROLLBACK_DEST" "$ROLLBACK_INO"; then
-            printf 'tuk: WARNING: not restoring the previous catalogue: %s is no longer the file this run installed. Check it by hand.\n' "$ROLLBACK_DEST" >&2
+            printf 'tuk: WARNING: not restoring the previous catalogue: %s is no longer the file this run installed (it is not a regular file, or it was replaced). It was left as it is; check it by hand.\n' "$ROLLBACK_DEST" >&2
+        elif [[ $(sha256_of "$ROLLBACK_DEST" || true) != "$ROLLBACK_PUB_SHA" ]]; then
+            printf 'tuk: WARNING: not restoring the previous catalogue: %s was modified after this run installed it (its content no longer matches). It was left as it is; check it by hand.\n' "$ROLLBACK_DEST" >&2
         elif t=$(mktemp -- "${ROLLBACK_DEST%/*}/.tuk.XXXXXXXX") && cp -- "$ROLLBACK_SRC" "$t" && chmod 0644 -- "$t" \
            && mv -fT -- "$t" "$ROLLBACK_DEST" && record_set catalogue "$ROLLBACK_VER" "$ROLLBACK_SHA" "$ROLLBACK_DEST" manager; then
             printf 'tuk: restored the previous catalogue after the manager step failed\n' >&2
@@ -793,7 +797,7 @@ apply_managed() { # src dest row mode action
             mv -fT -- "$tmp" "$dest"
             # Armed only now that this run has replaced the file, and tied to that very file.
             if [[ $row == catalogue && -n $PREV_COPY ]]; then
-                ROLLBACK_SRC=$PREV_COPY; ROLLBACK_DEST=$dest; ROLLBACK_SHA=$PREV_SHA; ROLLBACK_VER=$PREV_VER; ROLLBACK_INO=$ino
+                ROLLBACK_SRC=$PREV_COPY; ROLLBACK_DEST=$dest; ROLLBACK_SHA=$PREV_SHA; ROLLBACK_VER=$PREV_VER; ROLLBACK_INO=$ino; ROLLBACK_PUB_SHA=$ssum
             fi
             printf 'Upgraded %s\n' "$dest" ;;
         new)
