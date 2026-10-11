@@ -25,6 +25,8 @@ tuk --version
 tuk --help
 ```
 
+Bootstrap validates the catalogue and your tool choices before it changes anything.
+
 Scripted provisioning: `./bootstrap --install clip,zellij` (add `--no-prompt`
 to guarantee no questions). Without `--install`, a non-interactive run installs
 the manager only.
@@ -61,6 +63,9 @@ only for GitHub release downloads (`github.com`, which redirects to GitHub's dow
    untrusted ownership or permissions and existing destinations, and never runs
    the payload. `tuk` writes the checksum manifest it consumes from the
    catalogue, not from the download.
+   `tuk install a b` fetches and verifies every requested tool before installing
+   any, so a download or hash failure installs none. If the privileged step
+   refuses a later tool, earlier ones stay installed and are listed in the error.
 4. **No overwrites.** An existing file or symlink at the destination is never
    replaced, even if identical. A different installed version is never replaced
    automatically (upgrades are not implemented).

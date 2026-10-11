@@ -3,9 +3,12 @@
 # tuk: install and verify approved Tuk utilities from pinned public releases.
 # The package catalogue is data (packages.conf); it is parsed, never sourced.
 set -euo pipefail
+(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )) || { echo 'tuk: Bash 4.4 or newer is required' >&2; exit 1; }
 umask 077
 
 TUK_VERSION=0.1.0
+# Keep in sync with the prerequisite list in ./bootstrap (a test compares them).
+REQUIRED_TOOLS=(curl sha256sum stat mktemp cp mv ln rm chmod install realpath flock date sort)
 RELEASE_BASE=https://github.com/tukdex/tuk-binaries/releases/download
 
 die() { printf 'tuk: %s\n' "$*" >&2; exit 1; }
@@ -76,7 +79,7 @@ valid_value() {
     esac
 }
 
-load_catalogue() {
+_load_catalogue() {
     local file=$1 line n=0 cur='' key val k schema=0 name
     local -A seen=()
     P=(); PKG_NAMES=(); CAT_ERR=''
@@ -118,6 +121,10 @@ load_catalogue() {
     done
 }
 
+load_catalogue() {
+    _load_catalogue "$1" || { P=(); PKG_NAMES=(); return 1; }
+}
+
 # --- Helpers -----------------------------------------------------------------
 sha256_of() {
     local out
@@ -126,10 +133,15 @@ sha256_of() {
 }
 
 # Owned by root (or the invoking user) and not group/other writable.
+file_meta() { # sets META_MODE and META_OWNER; fails if stat fails
+    local out
+    out=$(stat -c '%a %u' -- "$1") || return 1
+    read -r META_MODE META_OWNER <<< "$out"
+}
+
 trusted_path() {
-    local owner mode
-    read -r owner mode < <(stat -c '%u %a' -- "$1") || return 1
-    [[ $owner == 0 || $owner == "$EUID" ]] && (( (8#$mode & 8#022) == 0 ))
+    file_meta "$1" || return 1
+    [[ $META_OWNER == 0 || $META_OWNER == "$EUID" ]] && (( (8#$META_MODE & 8#022) == 0 ))
 }
 
 load_catalogue_or_die() {
@@ -163,7 +175,7 @@ declare -A R=()      # R[name:field]
 R_NAMES=()
 REC_ERR=''
 re_ts='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
-re_path='^/[A-Za-z0-9._/+-]+$'
+re_path='^/[^[:cntrl:]]+$'
 
 load_record() {
     local name ver sha path rel ts extra
@@ -214,7 +226,10 @@ take_lock() {
 S_STATE=''; S_DETAIL=''; S_SHA='-'
 
 eval_pkg() {
-    local n=$1 dest=$BIN_DIR/$1 sum mode owner has_rec=0 miss
+    local n=$1 dest=$BIN_DIR/$1 sum has_rec=0 miss unsupported=''
+    if [[ $HOST_OS != Linux ]] || ! arch_ok "$n"; then
+        unsupported="needs ${P[$n:os]}/${P[$n:arch]}, this host is $HOST_OS/$HOST_ARCH"
+    fi
     S_STATE=''; S_DETAIL=''; S_SHA='-'
     [[ -n ${R[$n:sha]:-} ]] && has_rec=1
     if [[ -e $dest || -L $dest ]]; then
@@ -225,15 +240,17 @@ eval_pkg() {
         fi
         if ! sum=$(sha256_of "$dest"); then S_STATE=modified; S_DETAIL='cannot read installed file'; return 0; fi
         S_SHA=$sum
-        read -r mode owner < <(stat -c '%a %u' -- "$dest")
-        if (( ! has_rec )); then
+        if ! file_meta "$dest"; then S_STATE=modified; S_DETAIL='cannot stat installed file'; return 0; fi
+        if (( ! has_rec )) && [[ -n $unsupported ]]; then
+            S_STATE=unsupported; S_DETAIL="$unsupported; a file already exists at $dest"
+        elif (( ! has_rec )); then
             S_STATE=unmanaged
             if [[ $sum == "${P[$n:payload_sha256]}" ]]; then S_DETAIL='content matches the catalogue but was not installed by tuk'
             else S_DETAIL='existing command not installed by tuk'; fi
         elif [[ $sum != "${R[$n:sha]}" ]]; then
             S_STATE=modified; S_DETAIL='content differs from the installation record'
-        elif [[ $mode != 755 || ( $owner != 0 && $owner != "$EUID" ) ]]; then
-            S_STATE=modified; S_DETAIL="unexpected mode/owner ($mode, uid $owner)"
+        elif [[ $META_MODE != 755 || ( $META_OWNER != 0 && $META_OWNER != "$EUID" ) ]]; then
+            S_STATE=modified; S_DETAIL="unexpected mode/owner ($META_MODE, uid $META_OWNER)"
         elif [[ ${R[$n:ver]} != "${P[$n:version]}" ]]; then
             S_STATE=outdated; S_DETAIL="installed ${R[$n:ver]}, catalogue ${P[$n:version]}"
         elif [[ $sum != "${P[$n:payload_sha256]}" ]]; then
@@ -243,12 +260,11 @@ eval_pkg() {
         fi
         return 0
     fi
-    if [[ $HOST_OS != Linux ]] || ! arch_ok "$n"; then
-        S_STATE=unsupported; S_DETAIL="needs ${P[$n:os]}/${P[$n:arch]}, this host is $HOST_OS/$HOST_ARCH"; return 0
-    fi
+    # Gone-but-recorded is drift and is reported before platform or dependency problems.
+    if (( has_rec )); then S_STATE=missing; S_DETAIL='recorded as installed but the file is gone'; return 0; fi
+    if [[ -n $unsupported ]]; then S_STATE=unsupported; S_DETAIL=$unsupported; return 0; fi
     miss=$(missing_requires "$n")
     if [[ -n $miss ]]; then S_STATE=missing-dependency; S_DETAIL="missing: $miss"; return 0; fi
-    if (( has_rec )); then S_STATE=missing; S_DETAIL='recorded as installed but the file is gone'; return 0; fi
     S_STATE=not-installed
 }
 
@@ -312,11 +328,10 @@ check_file() { # file expected_size expected_sha label
 }
 
 verify_installed() { # path expected_sha
-    local mode owner
     [[ -f $1 && ! -L $1 ]] || return 1
     [[ $(sha256_of "$1") == "$2" ]] || return 1
-    read -r mode owner < <(stat -c '%a %u' -- "$1")
-    [[ $mode == 755 && $owner == "$EUID" ]]
+    file_meta "$1" || return 1
+    [[ $META_MODE == 755 && $META_OWNER == "$EUID" ]]
 }
 
 # Privileged half of an install. Treats the unprivileged staging directory as
@@ -340,7 +355,8 @@ priv_install_pkg() { # name uploaded_dir
     CLEAN+=("$stage")
     for f in "$payload" "$installer"; do
         [[ -f $up/$f && ! -L $up/$f ]] || die "staged file is missing or not a regular file: $f"
-        cp -- "$up/$f" "$stage/$f"
+        # Never follow a link swapped in after the check; the copy is re-checked below.
+        cp --no-dereference -- "$up/$f" "$stage/$f"
     done
     check_file "$stage/$payload" "${P[$n:payload_size]}" "${P[$n:payload_sha256]}" "$payload" || exit 1
     check_file "$stage/$installer" '' "${P[$n:installer_sha256]}" "$installer" || exit 1
@@ -357,8 +373,16 @@ priv_install_pkg() { # name uploaded_dir
     printf 'Installed %s %s: %s (SHA-256 %s, verified)\n' "$n" "${P[$n:version]}" "$dest" "${P[$n:payload_sha256]}"
 }
 
+fail_after_partial() { # failed_name installed_name...
+    local failed=$1
+    shift
+    if (( $# )); then printf 'tuk: installed before the failure: %s\n' "$*" >&2; fi
+    printf 'tuk: %s was not installed; remaining requested tools were not attempted\n' "$failed" >&2
+    exit 1
+}
+
 cmd_install() {
-    local dry=0 names=() n a fetch_dir dir problems=0 todo=() miss
+    local dry=0 names=() n a fetch_dir dir problems=0 todo=() miss done_list=()
     local -A want=()
     for a in "$@"; do
         case $a in
@@ -383,7 +407,7 @@ cmd_install() {
     done
     (( problems == 0 )) || die 'nothing was installed'
     (( ${#todo[@]} > 0 )) || return 0
-    for n in curl sha256sum stat mktemp cp mv install flock; do
+    for n in "${REQUIRED_TOOLS[@]}"; do
         command -v -- "$n" > /dev/null 2>&1 || miss+="${miss:+ }$n"
     done
     [[ -z ${miss:-} ]] || die "missing required tools: $miss"
@@ -399,61 +423,74 @@ cmd_install() {
         [[ -f $BIN_DIR/tuk && ! -L $BIN_DIR/tuk && $(stat -c %u -- "$BIN_DIR/tuk") == 0 ]] \
             || die "$BIN_DIR/tuk is not a root-owned installed manager; run ./bootstrap"
     fi
-    # Unprivileged fetch into a private directory; the privileged side re-verifies.
+    # Phase 1, unprivileged: fetch and verify EVERYTHING before changing the system,
+    # so a download or hash failure for any package installs none of them.
     fetch_dir=$(mktemp -d "${TMPDIR:-/tmp}/tuk-fetch.XXXXXXXX")
     CLEAN+=("$fetch_dir")
     for n in "${todo[@]}"; do
         dir=$fetch_dir/$n
         mkdir -m 0700 -- "$dir"
         printf 'Fetching %s %s (%s)\n' "$n" "${P[$n:version]}" "${P[$n:release]}"
-        fetch_asset "${P[$n:release]}" "${P[$n:payload]}" "$dir/${P[$n:payload]}" "${P[$n:payload_size]}" || die "download of ${P[$n:payload]} failed"
-        fetch_asset "${P[$n:release]}" "${P[$n:installer]}" "$dir/${P[$n:installer]}" "$MAX_INSTALLER" || die "download of ${P[$n:installer]} failed"
-        check_file "$dir/${P[$n:payload]}" "${P[$n:payload_size]}" "${P[$n:payload_sha256]}" "${P[$n:payload]}" || die "$n: nothing installed"
-        check_file "$dir/${P[$n:installer]}" '' "${P[$n:installer_sha256]}" "${P[$n:installer]}" || die "$n: nothing installed"
+        fetch_asset "${P[$n:release]}" "${P[$n:payload]}" "$dir/${P[$n:payload]}" "${P[$n:payload_size]}" || die "download of ${P[$n:payload]} failed; nothing was installed"
+        fetch_asset "${P[$n:release]}" "${P[$n:installer]}" "$dir/${P[$n:installer]}" "$MAX_INSTALLER" || die "download of ${P[$n:installer]} failed; nothing was installed"
+        check_file "$dir/${P[$n:payload]}" "${P[$n:payload_size]}" "${P[$n:payload_sha256]}" "${P[$n:payload]}" || die "$n failed verification; nothing was installed"
+        check_file "$dir/${P[$n:installer]}" '' "${P[$n:installer_sha256]}" "${P[$n:installer]}" || die "$n failed verification; nothing was installed"
+    done
+    # Phase 2, privileged: one package at a time, each re-verified by root. A
+    # refusal here stops the run; tools already installed are kept and listed.
+    for n in "${todo[@]}"; do
         if (( EUID == 0 || TEST_MODE )); then
-            priv_install_pkg "$n" "$dir"
+            (CLEAN=(); trap cleanup EXIT; priv_install_pkg "$n" "$fetch_dir/$n") || fail_after_partial "$n" "${done_list[@]}"
         else
-            sudo -- "$BIN_DIR/tuk" _install-staged "$n" "$dir"
+            sudo -- "$BIN_DIR/tuk" _install-staged "$n" "$fetch_dir/$n" || fail_after_partial "$n" "${done_list[@]}"
         fi
+        done_list+=("$n")
     done
 }
 
 # Installs this script and its catalogue next to each other. Invoked by
 # ./bootstrap from a clone; replaces nothing unless --upgrade-manager is given
 # and the installed file is exactly what tuk previously recorded.
-install_managed() { # src dest row mode upgrade
-    local src=$1 dest=$2 row=$3 mode=$4 upgrade=$5 tmp ssum dsum cur_mode cur_owner
+plan_managed() { # src dest row mode upgrade -> prints new|same|replace, or dies
+    local src=$1 dest=$2 row=$3 mode=$4 upgrade=$5 ssum dsum
     ssum=$(sha256_of "$src")
-    if [[ -e $dest || -L $dest ]]; then
-        [[ -f $dest && ! -L $dest ]] || die "$dest exists and is not a regular file; not touching it"
-        dsum=$(sha256_of "$dest") || die "cannot read $dest"
-        if [[ $dsum == "$ssum" ]]; then
-            read -r cur_mode cur_owner < <(stat -c '%a %u' -- "$dest")
-            (( 8#$cur_mode == 8#$mode )) && [[ $cur_owner == "$EUID" ]] || die "$dest has the right content but unexpected mode or owner ($cur_mode, uid $cur_owner)"
+    if [[ ! -e $dest && ! -L $dest ]]; then echo new; return 0; fi
+    [[ -f $dest && ! -L $dest ]] || die "$dest exists and is not a regular file; not touching it"
+    dsum=$(sha256_of "$dest") || die "cannot read $dest"
+    if [[ $dsum == "$ssum" ]]; then
+        file_meta "$dest" || die "cannot stat $dest"
+        (( 8#$META_MODE == 8#$mode )) && [[ $META_OWNER == "$EUID" ]] || die "$dest has the right content but unexpected mode or owner ($META_MODE, uid $META_OWNER)"
+        echo same; return 0
+    fi
+    if (( upgrade )) && [[ -n ${R[$row:sha]:-} && $dsum == "${R[$row:sha]}" ]]; then echo replace; return 0; fi
+    die "$dest already exists with different content. If it is an older tuk installed by bootstrap, re-run ./bootstrap --upgrade-manager; otherwise move it aside after reviewing it"
+}
+
+apply_managed() { # src dest row mode action
+    local src=$1 dest=$2 row=$3 mode=$4 action=$5 tmp ssum
+    ssum=$(sha256_of "$src")
+    case $action in
+        same)
             if [[ ${R[$row:sha]:-} != "$ssum" ]]; then record_set "$row" "$TUK_VERSION" "$ssum" "$dest" manager; fi
-            printf '%s is already up to date\n' "$dest"; return 0
-        fi
-        if (( upgrade )) && [[ -n ${R[$row:sha]:-} && $dsum == "${R[$row:sha]}" ]]; then
+            printf '%s is already up to date\n' "$dest"; return 0 ;;
+        replace)
             tmp=$(mktemp -- "$(dirname -- "$dest")/.tuk.XXXXXXXX"); CLEAN+=("$tmp")
             cp -- "$src" "$tmp"; chmod "$mode" -- "$tmp"
             mv -fT -- "$tmp" "$dest"
-            printf 'Upgraded %s\n' "$dest"
-        else
-            die "$dest already exists with different content. If it is an older tuk installed by bootstrap, re-run ./bootstrap --upgrade-manager; otherwise move it aside after reviewing it"
-        fi
-    else
-        tmp=$(mktemp -- "$(dirname -- "$dest")/.tuk.XXXXXXXX"); CLEAN+=("$tmp")
-        cp -- "$src" "$tmp"; chmod "$mode" -- "$tmp"
-        ln -T -- "$tmp" "$dest" || die "$dest appeared while installing; not overwriting"
-        rm -f -- "$tmp"
-        printf 'Installed %s\n' "$dest"
-    fi
+            printf 'Upgraded %s\n' "$dest" ;;
+        new)
+            tmp=$(mktemp -- "$(dirname -- "$dest")/.tuk.XXXXXXXX"); CLEAN+=("$tmp")
+            cp -- "$src" "$tmp"; chmod "$mode" -- "$tmp"
+            ln -T -- "$tmp" "$dest" || die "$dest appeared while installing; not overwriting"
+            rm -f -- "$tmp"
+            printf 'Installed %s\n' "$dest" ;;
+    esac
     [[ $(sha256_of "$dest") == "$ssum" ]] || die "$dest failed post-install verification"
     record_set "$row" "$TUK_VERSION" "$ssum" "$dest" manager
 }
 
 cmd_self_install() {
-    local upgrade=0 src srcdir stage a
+    local upgrade=0 src srcdir stage a cat_action tuk_action
     for a in "$@"; do
         if [[ $a == --upgrade-manager ]]; then upgrade=1; else usage_error "unknown option '$a'"; fi
     done
@@ -470,8 +507,11 @@ cmd_self_install() {
     [[ -d $LIB_DIR ]] || install -d -m 0755 -- "$LIB_DIR"
     take_lock
     load_record || die "$REC_ERR"
-    install_managed "$stage/packages.conf" "$CATALOGUE" catalogue 0644 "$upgrade"
-    install_managed "$stage/tuk" "$BIN_DIR/tuk" tuk 0755 "$upgrade"
+    # Decide both before touching either, so the pair is never half-updated by a refusal.
+    cat_action=$(plan_managed "$stage/packages.conf" "$CATALOGUE" catalogue 0644 "$upgrade")
+    tuk_action=$(plan_managed "$stage/tuk" "$BIN_DIR/tuk" tuk 0755 "$upgrade")
+    apply_managed "$stage/packages.conf" "$CATALOGUE" catalogue 0644 "$cat_action"
+    apply_managed "$stage/tuk" "$BIN_DIR/tuk" tuk 0755 "$tuk_action"
 }
 
 cmd_doctor() {
@@ -481,7 +521,7 @@ cmd_doctor() {
     wrn() { printf '  warn  %s\n' "$*"; }
     printf 'tuk %s doctor (read-only)\n' "$TUK_VERSION"
     [[ $HOST_OS == Linux ]] && ok "platform $HOST_OS/$HOST_ARCH" || bad "unsupported operating system $HOST_OS"
-    for c in curl sha256sum stat mktemp cp mv ln install flock realpath; do
+    for c in "${REQUIRED_TOOLS[@]}"; do
         if command -v -- "$c" > /dev/null 2>&1; then ok "tool $c"; else bad "required tool missing: $c"; fi
     done
     if (( EUID != 0 && ! TEST_MODE )); then
@@ -540,6 +580,9 @@ case ${1:-} in
     doctor) shift; (( $# == 0 )) || usage_error 'doctor takes no arguments'; cmd_doctor ;;
     install) shift; cmd_install "$@" ;;
     _install-staged) shift; (( $# == 2 )) || usage_error 'bad arguments'; priv_install_pkg "$@" ;;
+    _catalogue-names) shift; (( $# == 1 )) || usage_error 'bad arguments'
+        load_catalogue "$1" || die "invalid catalogue: $CAT_ERR"
+        for n in "${PKG_NAMES[@]}"; do printf '%s\t%s\t%s\n' "$n" "${P[$n:version]}" "${P[$n:description]}"; done ;;
     _self-install) shift; cmd_self_install "$@" ;;
     -V|--version|version) printf 'tuk %s\n' "$TUK_VERSION" ;;
     -h|--help|help) usage ;;
