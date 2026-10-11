@@ -1,5 +1,20 @@
 # tuk-binaries
 
+## Quick start
+
+```sh
+git clone https://github.com/tukdex/tuk-binaries.git
+cd tuk-binaries
+./bootstrap          # installs the tuk manager; nothing else unless you choose
+tuk list
+tuk install clip zellij
+```
+
+[tuk](tuk/README.md) installs only the pinned, reviewed releases listed in its
+catalogue, verifies SHA-256 values and never overwrites existing commands. `main`
+is mutable: to install from a reviewed commit, see
+[pinning the bootstrap](tuk/README.md#pinning-the-bootstrap).
+
 Precompiled Linux executables (Zellij) and a standalone Bash script (clip).
 Zellij is a **locally compiled redistribution, not an official upstream
 artefact**; its executables are release assets only, not stored in Git.

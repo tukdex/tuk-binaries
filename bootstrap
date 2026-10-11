@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Install the tuk manager from this checkout, then optionally install tools.
+# Nothing is downloaded here; tool downloads are done later by tuk, against
+# the SHA-256 pins in this checkout's tuk/packages.conf.
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: ./bootstrap [--install NAME[,NAME...]] [--no-prompt] [--upgrade-manager]
+
+Installs the tuk command (/usr/local/bin/tuk) and its catalogue
+(/usr/local/lib/tuk/packages.conf) from this checkout. Needs root, or sudo.
+
+  --install LIST       Also install the named tools (comma separated).
+  --no-prompt          Never ask questions (implied when not on a terminal).
+  --upgrade-manager    Replace an older tuk that bootstrap itself installed
+                       and that has not been modified. Nothing else is replaced.
+  -h, --help           Show this help.
+
+Without --install, an interactive run offers the tool list; a scripted run
+installs no tools.
+EOF
+}
+fail() { printf 'bootstrap: %s\n' "$*" >&2; exit 1; }
+
+install_list=''
+prompt=1
+upgrade=()
+while (( $# )); do
+    case $1 in
+        --install) (( $# >= 2 )) || fail '--install needs a value'; install_list=$2; shift 2 ;;
+        --no-prompt) prompt=0; shift ;;
+        --upgrade-manager) upgrade=(--upgrade-manager); shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+done
+[[ -t 0 && -t 1 ]] || prompt=0
+
+names=()
+if [[ -n $install_list ]]; then
+    IFS=, read -ra names <<< "$install_list"
+    for n in "${names[@]}"; do
+        [[ $n =~ ^[a-z][a-z0-9-]{0,31}$ ]] || fail "invalid tool name '$n'"
+    done
+fi
+
+[[ $(uname -s) == Linux ]] || fail 'Linux is required'
+(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )) || fail 'Bash 4.4 or newer is required'
+
+# Report every missing prerequisite at once.
+need=(curl sha256sum stat mktemp cp mv ln rm chmod install realpath flock date sort)
+(( EUID == 0 )) || need+=(sudo)
+missing=()
+for c in "${need[@]}"; do command -v -- "$c" > /dev/null 2>&1 || missing+=("$c"); done
+if (( ${#missing[@]} )); then
+    printf 'bootstrap: missing prerequisites: %s\n' "${missing[*]}" >&2
+    if [[ -r /etc/debian_version ]]; then
+        printf 'On Debian/Proxmox: apt-get install curl coreutils util-linux sudo   (as root)\n' >&2
+    fi
+    exit 1
+fi
+
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+for f in tuk/tuk tuk/packages.conf; do
+    [[ -f $here/$f && ! -L $here/$f ]] || fail "$f is missing from this checkout or is not a regular file"
+done
+
+priv=()
+if (( EUID != 0 )); then
+    # A test prefix is accepted only for unprivileged scratch runs; sudo would drop it.
+    [[ -n ${TUK_TEST_PREFIX:-} ]] || priv=(sudo --)
+fi
+
+# Test prefix mirrors tuk's own (refused for root inside tuk).
+if [[ -n ${TUK_TEST_PREFIX:-} ]]; then bin_dir=$TUK_TEST_PREFIX/bin; else bin_dir=/usr/local/bin; fi
+
+# The clone's tuk installs itself and the catalogue; it will not overwrite
+# anything different unless --upgrade-manager is given for an unmodified tuk.
+"${priv[@]}" bash "$here/tuk/tuk" _self-install "${upgrade[@]}"
+
+tuk=$bin_dir/tuk
+case ":$PATH:" in *":$bin_dir:"*) ;; *) printf 'bootstrap: note: %s is not on your PATH\n' "$bin_dir" >&2 ;; esac
+
+if (( ${#names[@]} )); then
+    "$tuk" install "${names[@]}"
+elif (( prompt )); then
+    printf '\n'
+    "$tuk" list
+    printf '\nTools to install now (names separated by spaces; Enter for none): '
+    read -r answer || answer=''
+    read -ra names <<< "$answer"
+    for n in "${names[@]}"; do
+        [[ $n =~ ^[a-z][a-z0-9-]{0,31}$ ]] || fail "invalid tool name '$n'"
+    done
+    if (( ${#names[@]} )); then "$tuk" install "${names[@]}"; fi
+fi
+printf '\ntuk is ready. Try: tuk list | tuk install NAME | tuk status\n'
