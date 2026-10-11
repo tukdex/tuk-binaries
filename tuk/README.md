@@ -57,7 +57,11 @@ only for GitHub release downloads (`github.com`, which redirects to GitHub's dow
 2. **Unprivileged fetch, privileged install.** Downloads go to a private
    directory and are checked as a first pass. Only the final step runs as root
    (via `sudo`): it copies the files into a root-only directory, **re-hashes the
-   copies**, and only then runs the pinned installer.
+   copies**, and only then runs the pinned installer. Before handing over to
+   `sudo`, `tuk` checks that the installed manager is a regular file in a trusted
+   location, owned by root, mode exactly 0755 and byte-identical to what it
+   recorded when it installed it; otherwise it refuses and runs nothing as root.
+   One lock is held for the whole privileged run, and installers do not inherit it.
 3. **Reviewed installers are reused.** Each tool's existing `install-<name>`
    script (itself pinned by hash) performs the install. It refuses symlinks,
    untrusted ownership or permissions and existing destinations, and never runs
@@ -80,7 +84,14 @@ only for GitHub release downloads (`github.com`, which redirects to GitHub's dow
    did not exist, and the file is a regular file owned by the installing user, has
    a single link and was changed after the attempt began. Otherwise it is left in
    place and the failure is reported prominently; tuk then treats it as
-   `unmanaged`. tuk never deletes it.
+   `unmanaged`. tuk never deletes it. If the move or the `chmod a-x` fails, the
+   message says so and gives the command to run by hand.
+   Two further states are reported, never hidden, and never cleaned up
+   automatically: the installer exits non-zero but something is at the destination
+   (tuk prints its mode, owner, size and whether its hash equals the pin), and the
+   record cannot be written after a verified install (tuk says the file is in place
+   but unrecorded, and why; remove it by hand after checking its hash, then
+   re-run the install). Both leave an `unmanaged` command.
 6. **Trusted locations.** Before reading the catalogue or record, or installing into
    `/usr/local/bin`, `tuk` checks every directory from `/` down: each must be
    owned by root and not writable by group or others (a root-owned sticky
@@ -99,7 +110,7 @@ only for GitHub release downloads (`github.com`, which redirects to GitHub's dow
 
 `tuk list` / `tuk status` report one of: `not-installed`; `verified`;
 `modified` (content, mode or owner differs from the record, or the path became a
-symlink); `missing` (recorded but gone); `outdated` (catalogue now lists a
+symlink; owner means root, in every case, for the manager and for tools); `missing` (recorded but gone); `outdated` (catalogue now lists a
 different version); `unmanaged` (a command exists that tuk did not install; for
 example one you installed by hand, even if byte-identical); `unsupported`
 (OS/architecture) and `missing-dependency`.

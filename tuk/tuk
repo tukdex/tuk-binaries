@@ -17,8 +17,13 @@ usage_error() { printf 'tuk: %s\nTry: tuk --help\n' "$*" >&2; exit 2; }
 
 CLEAN=()
 DONE_LIST=()
-ROLLBACK_SRC=''; ROLLBACK_DEST=''; ROLLBACK_SHA=''; ROLLBACK_VER=''
-ROLLBACK_NEW_DEST=''; ROLLBACK_NEW_SHA=''
+# Rollback is armed only after this run has published the file (see apply_managed),
+# and identifies it by inode as well as hash, so a file this run did not write is
+# never removed or overwritten.
+ROLLBACK_SRC=''; ROLLBACK_DEST=''; ROLLBACK_SHA=''; ROLLBACK_VER=''; ROLLBACK_INO=''
+ROLLBACK_NEW_DEST=''; ROLLBACK_NEW_SHA=''; ROLLBACK_NEW_INO=''
+PREV_COPY=''; PREV_SHA=''; PREV_VER=''   # prepared by cmd_self_install, armed at publication
+LOCK_HELD=0
 JUST_INSTALLED=0
 cleanup() {
     local rc=$? p
@@ -27,7 +32,9 @@ cleanup() {
     fi
     if (( rc != 0 )) && [[ -n $ROLLBACK_SRC ]]; then
         local t
-        if t=$(mktemp -- "${ROLLBACK_DEST%/*}/.tuk.XXXXXXXX") && cp -- "$ROLLBACK_SRC" "$t" && chmod 0644 -- "$t" \
+        if ! is_our_file "$ROLLBACK_DEST" "$ROLLBACK_INO"; then
+            printf 'tuk: WARNING: not restoring the previous catalogue: %s is no longer the file this run installed. Check it by hand.\n' "$ROLLBACK_DEST" >&2
+        elif t=$(mktemp -- "${ROLLBACK_DEST%/*}/.tuk.XXXXXXXX") && cp -- "$ROLLBACK_SRC" "$t" && chmod 0644 -- "$t" \
            && mv -fT -- "$t" "$ROLLBACK_DEST" && record_set catalogue "$ROLLBACK_VER" "$ROLLBACK_SHA" "$ROLLBACK_DEST" manager; then
             printf 'tuk: restored the previous catalogue after the manager step failed\n' >&2
         else
@@ -35,12 +42,17 @@ cleanup() {
         fi
     fi
     if (( rc != 0 )) && [[ -n $ROLLBACK_NEW_DEST ]]; then
-        # The catalogue was created by this run; remove it only if it is still exactly our file.
-        if [[ -f $ROLLBACK_NEW_DEST && ! -L $ROLLBACK_NEW_DEST && $(sha256_of "$ROLLBACK_NEW_DEST" || true) == "$ROLLBACK_NEW_SHA" ]] \
-           && rm -f -- "$ROLLBACK_NEW_DEST" && record_unset catalogue; then
-            printf 'tuk: removed the catalogue created by this run because the manager step failed\n' >&2
-        else
+        # The catalogue was published by this run; remove it only if it is still that very
+        # file (same inode and same content). Anything else is left alone.
+        if ! is_our_file "$ROLLBACK_NEW_DEST" "$ROLLBACK_NEW_INO" || [[ $(sha256_of "$ROLLBACK_NEW_DEST" || true) != "$ROLLBACK_NEW_SHA" ]]; then
+            printf 'tuk: WARNING: not removing %s: it is no longer the file this run created. Check it by hand.\n' "$ROLLBACK_NEW_DEST" >&2
+        elif ! rm -f -- "$ROLLBACK_NEW_DEST"; then
             printf 'tuk: WARNING: could not remove the catalogue created by this run at %s\n' "$ROLLBACK_NEW_DEST" >&2
+        else
+            printf 'tuk: removed the catalogue created by this run because the manager step failed\n' >&2
+            if [[ -n ${R[catalogue:sha]:-} ]] && ! record_unset catalogue; then
+                printf 'tuk: WARNING: the catalogue was removed but its entry in %s could not be updated\n' "$RECORD" >&2
+            fi
         fi
     fi
     for p in "${CLEAN[@]}"; do rm -rf -- "$p"; done
@@ -158,6 +170,14 @@ sha256_of() {
     local out
     out=$(sha256sum -- "$1") || return 1
     printf '%s' "${out%% *}"
+}
+
+# True if path is a regular, non-symlink file with the given inode number.
+is_our_file() { # path inode
+    local ino
+    [[ -n $2 && -f $1 && ! -L $1 ]] || return 1
+    ino=$(stat -c %i -- "$1") || return 1
+    [[ $ino == "$2" ]]
 }
 
 # --- Trust checks ------------------------------------------------------------
@@ -294,19 +314,19 @@ load_record() {
     _load_record || { R=(); R_NAMES=(); return 1; }
 }
 
+# Returns non-zero, and leaves the old record untouched, if any step fails. Every
+# step is chained explicitly because callers use this in `if`/`||` contexts, where
+# `set -e` does not stop a failed write from being followed by the final rename.
 record_write() { # caller holds the lock
-    local n tmp
-    tmp=$(mktemp -- "$STATE_DIR/.installed.XXXXXXXX")
+    local n tmp body
+    body="# tuk installation record v1"$'\n'
+    while read -r n; do
+        [[ -n $n ]] || continue
+        body+=$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$n" "${R[$n:ver]}" "${R[$n:sha]}" "${R[$n:path]}" "${R[$n:rel]}" "${R[$n:ts]}")$'\n'
+    done < <(printf '%s\n' "${R_NAMES[@]}" | sort)
+    tmp=$(mktemp -- "$STATE_DIR/.installed.XXXXXXXX") || return 1
     CLEAN+=("$tmp")
-    {
-        printf '# tuk installation record v1\n'
-        while read -r n; do
-            [[ -n $n ]] || continue
-            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$n" "${R[$n:ver]}" "${R[$n:sha]}" "${R[$n:path]}" "${R[$n:rel]}" "${R[$n:ts]}"
-        done < <(printf '%s\n' "${R_NAMES[@]}" | sort)
-    } > "$tmp"
-    chmod 0644 -- "$tmp"
-    mv -fT -- "$tmp" "$RECORD"
+    printf '%s' "$body" > "$tmp" && chmod 0644 -- "$tmp" && mv -fT -- "$tmp" "$RECORD"
 }
 
 record_set() { # name version sha path release (caller holds the lock)
@@ -325,16 +345,22 @@ record_unset() { # name (caller holds the lock)
     record_write
 }
 
+# Takes the lock once per process and keeps it until exit. Re-opening descriptor 9
+# would close the old open file description and so release the lock.
 take_lock() {
+    (( LOCK_HELD == 0 )) || return 0
     if [[ -e $STATE_DIR || -L $STATE_DIR ]]; then
         [[ -d $STATE_DIR ]] || die "$STATE_DIR exists but is not a directory"
         trusted_path "$STATE_DIR" || trust_fail "untrusted state directory"
     else
+        # Never create anything under a parent that is not trusted.
+        check_location "$STATE_DIR" || trust_fail "refusing to create $STATE_DIR"
         install -d -m 0755 -- "$STATE_DIR"
         trusted_path "$STATE_DIR" || trust_fail "untrusted state directory"
     fi
     exec 9>> "$STATE_DIR/lock"
     flock -w 30 9 || die 'another tuk operation holds the lock'
+    LOCK_HELD=1
 }
 
 # --- State detection ---------------------------------------------------------
@@ -364,7 +390,7 @@ eval_pkg() {
             else S_DETAIL='existing command not installed by tuk'; fi
         elif [[ $sum != "${R[$n:sha]}" ]]; then
             S_STATE=modified; S_DETAIL='content differs from the installation record'
-        elif [[ $META_MODE != 755 || ( $META_OWNER != 0 && $META_OWNER != "$EUID" ) ]]; then
+        elif [[ $META_MODE != 755 ]] || ! owner_ok "$META_OWNER"; then
             S_STATE=modified; S_DETAIL="unexpected mode/owner ($META_MODE, uid $META_OWNER)"
         elif [[ ${R[$n:ver]} != "${P[$n:version]}" ]]; then
             S_STATE=outdated; S_DETAIL="installed ${R[$n:ver]}, catalogue ${P[$n:version]}"
@@ -405,6 +431,24 @@ load_all_or_die() {
     load_record || die "$REC_ERR"
 }
 
+# Called before the installed manager is executed with elevated privileges (and
+# by `_check-manager`, so the same rules are testable offline). Everything root
+# will run must be: a regular file, in a trusted location, owned by root, mode
+# exactly 755, and byte-identical to what tuk recorded when it installed it.
+# The record is read through the same trust checks as every other command.
+manager_gate() {
+    local m=$BIN_DIR/tuk
+    [[ -f $m && ! -L $m ]] || die "$m is not an installed manager file; run ./bootstrap from a reviewed checkout"
+    trusted_path "$m" || trust_fail "refusing to run $m with elevated privileges"
+    [[ -n ${R[tuk:sha]:-} ]] || die "refusing to run $m with elevated privileges: the manager has no installation record (re-run ./bootstrap from a reviewed checkout)"
+    [[ $(sha256_of "$m" || true) == "${R[tuk:sha]}" ]] \
+        || die "refusing to run $m with elevated privileges: it differs from its installation record (re-run ./bootstrap from a reviewed checkout)"
+    file_meta "$m" || die "refusing to run $m with elevated privileges: cannot stat it"
+    if [[ $META_MODE != 755 ]] || ! owner_ok "$META_OWNER"; then
+        die "refusing to run $m with elevated privileges: unexpected mode or owner (mode $META_MODE, uid $META_OWNER; expected 755 owned by root)"
+    fi
+}
+
 # --- Commands ----------------------------------------------------------------
 cmd_list() {
     local n
@@ -435,8 +479,10 @@ cmd_status() {
         mgr_sha=$(sha256_of "$BIN_DIR/tuk") || mgr_sha=unreadable
         # No record means the manager's integrity cannot be verified: treated as a failure.
         if [[ -z ${R[tuk:sha]:-} ]]; then mgr_state=unmanaged; bad=1; notes+=('tuk: the manager has no installation record, so its integrity cannot be verified (re-run ./bootstrap from a reviewed checkout)')
-        elif [[ $mgr_sha == "${R[tuk:sha]}" ]]; then mgr_state=verified
-        else mgr_state=modified; bad=1; notes+=('tuk: manager differs from its installation record'); fi
+        elif [[ $mgr_sha != "${R[tuk:sha]}" ]]; then mgr_state=modified; bad=1; notes+=('tuk: manager differs from its installation record')
+        elif ! file_meta "$BIN_DIR/tuk" || [[ $META_MODE != 755 ]] || ! owner_ok "$META_OWNER"; then
+            mgr_state=modified; bad=1; notes+=("tuk: manager has unexpected mode or owner (${META_MODE:-?}, uid ${META_OWNER:-?}); expected 755 owned by root")
+        else mgr_state=verified; fi
         printf '%-10s %-9s %-18s %s\n' tuk "${R[tuk:ver]:--}" "$mgr_state" "$mgr_sha"
     elif [[ -n ${R[tuk:sha]:-} ]]; then
         bad=1
@@ -493,10 +539,14 @@ copy_bounded() { # src dst max
 # attributed to this install attempt. Evidence required (all of it): the installer
 # exited 0 for a destination that did not exist (it publishes with an atomic,
 # non-overwriting link); the destination is a regular non-symlink file owned by
-# this process, with a single link, whose change time is not before the attempt began;
-# and the destination directory was verified trusted. Anything else is preserved.
+# this process, with a single link, whose change time is not before the attempt began
+# (one second of slack: the start time is read from the precise clock, file change
+# times come from the kernel's coarser one); and the destination directory was
+# verified trusted. Anything else is preserved. The trusted directory is what makes
+# the final rename safe: no one else can write there, so the inspected path cannot be
+# swapped between the checks and the move.
 quarantine_or_preserve() { # name dest start_epoch
-    local n=$1 dest=$2 t0=$3 why='' out owner nlink ctime ino q
+    local n=$1 dest=$2 t0=$3 why='' out owner nlink ctime ino q mode
     if [[ -L $dest || ! -f $dest ]]; then
         why='it is not a regular file'
     elif ! out=$(stat -c '%u %h %Z %i' -- "$dest"); then
@@ -505,8 +555,11 @@ quarantine_or_preserve() { # name dest start_epoch
         read -r owner nlink ctime ino <<< "$out"
         if [[ $owner != "$EUID" ]]; then why="it is owned by uid $owner, not by this process"
         elif [[ $nlink != 1 ]]; then why="it has $nlink hard links"
-        elif (( ctime < t0 )); then why='its change time is earlier than the start of this install attempt'
+        elif (( ctime + 1 < t0 )); then why='its change time is earlier than the start of this install attempt'
         fi
+    fi
+    if [[ -z $why ]] && ! q=$(mktemp -- "${dest%/*}/.$n.failed.XXXXXXXX"); then
+        why='a quarantine name could not be reserved next to it'
     fi
     if [[ -n $why ]]; then
         printf 'tuk: *** %s FAILED POST-INSTALL VERIFICATION ***\n' "$n" >&2
@@ -514,22 +567,49 @@ quarantine_or_preserve() { # name dest start_epoch
         printf 'tuk: *** Inspect it and decide by hand. Nothing was recorded; tuk treats it as an unmanaged command.\n' >&2
         return 1
     fi
-    q=$(mktemp -u -- "${dest%/*}/.$n.failed.XXXXXXXX")
-    if mv -n -T -- "$dest" "$q" && [[ ! -e $dest ]] && [[ $(stat -c %i -- "$q") == "$ino" ]]; then
-        chmod a-x -- "$q" || true
-        printf 'tuk: *** %s FAILED POST-INSTALL VERIFICATION ***\n' "$n" >&2
+    # q is a placeholder this process created; the rename replaces it atomically.
+    if ! mv -fT -- "$dest" "$q"; then
+        if [[ -f $q && ! -L $q && ! -s $q ]]; then rm -f -- "$q"; fi
+        printf 'tuk: *** %s FAILED POST-INSTALL VERIFICATION and could not be moved aside; it is still at %s and may be executable. Inspect it by hand. ***\n' "$n" "$dest" >&2
+        return 1
+    fi
+    printf 'tuk: *** %s FAILED POST-INSTALL VERIFICATION ***\n' "$n" >&2
+    if [[ -e $dest || -L $dest || $(stat -c %i -- "$q" 2> /dev/null || true) != "$ino" ]]; then
+        printf 'tuk: *** The file moved to %s is not the one that was inspected, or %s exists again. Check both by hand; neither was changed further. ***\n' "$q" "$dest" >&2
+        return 1
+    fi
+    if chmod a-x -- "$q" && mode=$(stat -c %a -- "$q") && (( (8#$mode & 8#111) == 0 )); then
         printf 'tuk: *** The file created by this install did not match the expected hash, mode or owner. It was moved to %s and made non-executable;\n' "$q" >&2
         printf 'tuk: *** %s is free again. Nothing was recorded. Inspect the quarantined file, then delete it and retry.\n' "$dest" >&2
     else
-        printf 'tuk: *** %s FAILED POST-INSTALL VERIFICATION and quarantine did not complete cleanly; check %s and %s by hand ***\n' "$n" "$dest" "$q" >&2
+        printf 'tuk: *** The file created by this install did not match the expected hash, mode or owner. It was moved to %s but could NOT be made non-executable;\n' "$q" >&2
+        printf 'tuk: *** it may still be executable. %s is free again. Nothing was recorded. Run: chmod a-x -- %s ; then inspect and delete it.\n' "$dest" "$q" >&2
     fi
     return 1
+}
+
+# The installer failed but something is at the destination. State exactly what is
+# there; do not delete, move or record it (the evidence that justifies quarantine,
+# a successful installer, is missing).
+report_unverified() { # name dest installer_status installer_output
+    local n=$1 dest=$2 rc=$3 out=$4 desc='unreadable' sum=''
+    if [[ -L $dest ]]; then desc='a symbolic link'
+    elif [[ -f $dest ]]; then
+        desc=$(stat -c 'mode %a, uid %u, %s bytes' -- "$dest" 2> /dev/null || echo 'unreadable')
+        sum=$(sha256_of "$dest" 2> /dev/null || true)
+        if [[ $sum == "${P[$n:payload_sha256]}" ]]; then sum=", SHA-256 equals the pinned payload hash"
+        else sum=", SHA-256 ${sum:-unknown} does NOT equal the pinned payload hash"; fi
+    else desc='not a regular file'
+    fi
+    printf 'tuk: *** the installer for %s exited with status %s, and %s now exists (%s%s) ***\n' "$n" "$rc" "$dest" "$desc" "$sum" >&2
+    printf 'tuk: *** It was not verified, not recorded and not touched. tuk treats it as an unmanaged command. Inspect it and remove it by hand if it is not wanted.\n' >&2
+    [[ -z $out ]] || printf 'tuk: installer output: %s\n' "${out//$'\n'/ }" >&2
 }
 
 # Privileged half of an install. Treats the unprivileged staging directory as
 # untrusted: files are copied into a root-private directory and re-verified there.
 priv_install_pkg() { # name uploaded_dir
-    local n=$1 up=$2 payload installer stage out dest f blockers t0
+    local n=$1 up=$2 payload installer stage out dest f blockers t0 rc=0
     (( EUID == 0 || TEST_MODE )) || die 'internal command: must run as root'
     [[ $n =~ $re_name ]] || die "invalid package name '$n'"
     [[ $up == /* ]] || die "the staging directory must be an absolute path (got '$up')"
@@ -537,7 +617,7 @@ priv_install_pkg() { # name uploaded_dir
     [[ -n ${P[$n:version]:-} ]] || die "unknown package '$n'"
     payload=${P[$n:payload]}; installer=${P[$n:installer]}; dest=$BIN_DIR/$n
     trusted_path "$BIN_DIR" || trust_fail "refusing to install into $BIN_DIR"
-    take_lock
+    take_lock   # no-op inside a batch: priv_install_all holds the one lock for the whole run
     load_record || die "$REC_ERR"
     eval_pkg "$n"
     case $S_STATE in
@@ -557,14 +637,22 @@ priv_install_pkg() { # name uploaded_dir
     printf '%s  %s\n' "${P[$n:payload_sha256]}" "$payload" > "$stage/${P[$n:manifest]}"
     chmod 0644 -- "$stage/$payload" "$stage/$installer" "$stage/${P[$n:manifest]}"
     t0=$(date +%s)
-    if ! out=$(bash "$stage/$installer" "$stage/$payload" "$BIN_DIR" 2>&1); then
-        die "installer refused $n; nothing installed: ${out//$'\n'/ }"
+    # Descriptor 9 is the lock: the installer must not inherit it.
+    out=$(bash "$stage/$installer" "$stage/$payload" "$BIN_DIR" 2>&1 9>&-) || rc=$?
+    if (( rc != 0 )); then
+        if [[ -e $dest || -L $dest ]]; then report_unverified "$n" "$dest" "$rc" "$out"; exit 1; fi
+        die "installer refused $n; nothing installed at $dest: ${out//$'\n'/ }"
     fi
     if ! verify_installed "$dest" "${P[$n:payload_sha256]}"; then
         quarantine_or_preserve "$n" "$dest" "$t0" || true
         exit 1
     fi
-    record_set "$n" "${P[$n:version]}" "${P[$n:payload_sha256]}" "$dest" "${P[$n:release]}"
+    if ! record_set "$n" "${P[$n:version]}" "${P[$n:payload_sha256]}" "$dest" "${P[$n:release]}"; then
+        printf 'tuk: *** %s was installed at %s and passed verification (SHA-256 %s) but could NOT be recorded in %s ***\n' "$n" "$dest" "${P[$n:payload_sha256]}" "$RECORD" >&2
+        printf 'tuk: *** The file is in place and executable; nothing was deleted. tuk now treats it as an unmanaged command and will not touch it.\n' >&2
+        printf 'tuk: *** Fix the cause (free disk space, permissions or I/O errors under %s). To install it under tuk, check that its SHA-256 still equals the value above, remove it by hand, and run the install again.\n' "$STATE_DIR" >&2
+        exit 1
+    fi
     printf 'Installed %s %s: %s (SHA-256 %s, verified)\n' "$n" "${P[$n:version]}" "$dest" "${P[$n:payload_sha256]}"
     JUST_INSTALLED=1
 }
@@ -574,6 +662,7 @@ priv_install_pkg() { # name uploaded_dir
 priv_install_all() { # staging_dir name...
     local up=$1 n
     shift
+    take_lock   # one lock for the whole batch
     for n in "$@"; do
         JUST_INSTALLED=0
         priv_install_pkg "$n" "$up/$n"
@@ -630,11 +719,11 @@ cmd_install() {
     [[ -z ${miss:-} ]] || die "missing required tools: $miss"
     # Fail before any download if the destination would be refused anyway.
     check_location "$BIN_DIR" || trust_fail "cannot install into $BIN_DIR; nothing was downloaded"
+    check_location "$STATE_DIR" || trust_fail "cannot install: $STATE_DIR is not in a trusted location; nothing was downloaded"
     tmpbase=$(tmp_base)
     if (( EUID != 0 && ! TEST_MODE )); then
         command -v sudo > /dev/null 2>&1 || die 'installing needs root: run as root or install sudo'
-        [[ -f $BIN_DIR/tuk && ! -L $BIN_DIR/tuk && $(stat -c %u -- "$BIN_DIR/tuk") == 0 ]] \
-            || die "$BIN_DIR/tuk is not a root-owned installed manager; run ./bootstrap"
+        manager_gate
         # Authenticate sudo once, up front, before anything is downloaded.
         sudo -v || die 'sudo authentication failed; nothing was installed'
     fi
@@ -656,6 +745,9 @@ cmd_install() {
     if (( EUID == 0 || TEST_MODE )); then
         priv_install_all "$fetch_dir" "${todo[@]}"
     else
+        # Re-check just before the hand-off: the downloads took time.
+        load_record || die "$REC_ERR"
+        manager_gate
         sudo -- "$BIN_DIR/tuk" _install-staged "$fetch_dir" "${todo[@]}"
     fi
 }
@@ -688,26 +780,40 @@ plan_managed() { # src dest row mode upgrade -> prints new|same|replace, or dies
 }
 
 apply_managed() { # src dest row mode action
-    local src=$1 dest=$2 row=$3 mode=$4 action=$5 tmp ssum
+    local src=$1 dest=$2 row=$3 mode=$4 action=$5 tmp ssum ino
     ssum=$(sha256_of "$src")
     case $action in
         same)
-            if [[ ${R[$row:sha]:-} != "$ssum" ]]; then record_set "$row" "$TUK_VERSION" "$ssum" "$dest" manager; fi
+            if [[ ${R[$row:sha]:-} != "$ssum" ]]; then record_managed "$row" "$ssum" "$dest"; fi
             printf '%s is already up to date\n' "$dest"; return 0 ;;
         replace)
             tmp=$(mktemp -- "${dest%/*}/.tuk.XXXXXXXX"); CLEAN+=("$tmp")
             cp -- "$src" "$tmp"; chmod "$mode" -- "$tmp"
+            ino=$(stat -c %i -- "$tmp")
             mv -fT -- "$tmp" "$dest"
+            # Armed only now that this run has replaced the file, and tied to that very file.
+            if [[ $row == catalogue && -n $PREV_COPY ]]; then
+                ROLLBACK_SRC=$PREV_COPY; ROLLBACK_DEST=$dest; ROLLBACK_SHA=$PREV_SHA; ROLLBACK_VER=$PREV_VER; ROLLBACK_INO=$ino
+            fi
             printf 'Upgraded %s\n' "$dest" ;;
         new)
             tmp=$(mktemp -- "${dest%/*}/.tuk.XXXXXXXX"); CLEAN+=("$tmp")
             cp -- "$src" "$tmp"; chmod "$mode" -- "$tmp"
+            ino=$(stat -c %i -- "$tmp")
             ln -T -- "$tmp" "$dest" || die "$dest appeared while installing; not overwriting"
             rm -f -- "$tmp"
+            if [[ $row == catalogue ]]; then ROLLBACK_NEW_DEST=$dest; ROLLBACK_NEW_SHA=$ssum; ROLLBACK_NEW_INO=$ino; fi
             printf 'Installed %s\n' "$dest" ;;
     esac
     [[ $(sha256_of "$dest") == "$ssum" ]] || die "$dest failed post-install verification"
-    record_set "$row" "$TUK_VERSION" "$ssum" "$dest" manager
+    record_managed "$row" "$ssum" "$dest"
+}
+
+record_managed() { # row sha dest
+    record_set "$1" "$TUK_VERSION" "$2" "$3" manager && return 0
+    printf 'tuk: *** %s is installed (SHA-256 %s) but could not be recorded in %s ***\n' "$3" "$2" "$RECORD" >&2
+    printf 'tuk: *** Fix the cause (disk space, permissions, I/O errors) and re-run ./bootstrap: an unchanged file is re-recorded, nothing else is replaced.\n' >&2
+    exit 1
 }
 
 cmd_self_install() {
@@ -734,18 +840,15 @@ cmd_self_install() {
     cat_action=$(plan_managed "$stage/packages.conf" "$CATALOGUE" catalogue 0644 "$upgrade")
     tuk_action=$(plan_managed "$stage/tuk" "$BIN_DIR/tuk" tuk 0755 "$upgrade")
     if [[ $cat_action == replace ]]; then
-        # If the manager step fails after the catalogue is replaced, the exit handler restores this copy.
+        # Kept for the exit handler, which uses it only if this run goes on to replace the
+        # catalogue and a later step fails (apply_managed arms it at that moment).
         cp -- "$CATALOGUE" "$stage/previous-packages.conf"
-        ROLLBACK_SRC=$stage/previous-packages.conf; ROLLBACK_DEST=$CATALOGUE
-        ROLLBACK_SHA=${R[catalogue:sha]}; ROLLBACK_VER=${R[catalogue:ver]}
-    fi
-    if [[ $cat_action == new ]]; then
-        # A catalogue created by this run is removed again if the manager step fails.
-        ROLLBACK_NEW_DEST=$CATALOGUE; ROLLBACK_NEW_SHA=$(sha256_of "$stage/packages.conf")
+        [[ $(sha256_of "$stage/previous-packages.conf") == "${R[catalogue:sha]}" ]] || die "$CATALOGUE changed while installing; not touching it"
+        PREV_COPY=$stage/previous-packages.conf; PREV_SHA=${R[catalogue:sha]}; PREV_VER=${R[catalogue:ver]}
     fi
     apply_managed "$stage/packages.conf" "$CATALOGUE" catalogue 0644 "$cat_action"
     apply_managed "$stage/tuk" "$BIN_DIR/tuk" tuk 0755 "$tuk_action"
-    ROLLBACK_SRC=''; ROLLBACK_NEW_DEST=''
+    ROLLBACK_SRC=''; ROLLBACK_NEW_DEST=''; PREV_COPY=''
 }
 
 DOCTOR_FAILS=0
@@ -849,6 +952,7 @@ case ${1:-} in
     _catalogue-names) shift; (( $# == 1 )) || usage_error 'bad arguments'
         load_catalogue "$1" || die "invalid catalogue: $CAT_ERR"
         for n in "${PKG_NAMES[@]}"; do printf '%s\t%s\t%s\n' "$n" "${P[$n:version]}" "${P[$n:description]}"; done ;;
+    _check-manager) shift; (( $# == 0 )) || usage_error 'bad arguments'; load_record || die "$REC_ERR"; manager_gate ;;
     _required-tools) shift; (( $# == 0 )) || usage_error 'bad arguments'; printf '%s\n' "${REQUIRED_TOOLS[@]}" ;;
     _check-destination) shift; (( $# == 0 )) || usage_error 'bad arguments'
         for n in "$BIN_DIR" "$LIB_DIR" "$STATE_DIR"; do
