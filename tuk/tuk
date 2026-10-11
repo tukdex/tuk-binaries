@@ -421,13 +421,27 @@ cmd_status() {
     load_all_or_die
     printf '%-10s %-9s %-18s %s\n' NAME VERSION STATE SHA256
     # The manager is checked against its own record: the catalogue cannot pin it.
-    if [[ -f $BIN_DIR/tuk && ! -L $BIN_DIR/tuk ]]; then
+    # Three different situations must not be conflated:
+    #   * installed and recorded      -> verified / modified, by hash
+    #   * recorded but not on disk    -> missing (e.g. this copy runs from a checkout
+    #                                    after the installed one was removed): failure
+    #   * never installed, no record  -> not-installed (running from a checkout): fine
+    if [[ -L $BIN_DIR/tuk || ( -e $BIN_DIR/tuk && ! -f $BIN_DIR/tuk ) ]]; then
+        bad=1
+        if [[ -n ${R[tuk:sha]:-} ]]; then mgr_state=modified; notes+=("tuk: the recorded manager path $BIN_DIR/tuk is no longer a regular file")
+        else mgr_state=unmanaged; notes+=("tuk: $BIN_DIR/tuk is a symlink or not a regular file and has no installation record, so its integrity cannot be verified"); fi
+        printf '%-10s %-9s %-18s %s\n' tuk "${R[tuk:ver]:--}" "$mgr_state" -
+    elif [[ -f $BIN_DIR/tuk ]]; then
         mgr_sha=$(sha256_of "$BIN_DIR/tuk") || mgr_sha=unreadable
         # No record means the manager's integrity cannot be verified: treated as a failure.
         if [[ -z ${R[tuk:sha]:-} ]]; then mgr_state=unmanaged; bad=1; notes+=('tuk: the manager has no installation record, so its integrity cannot be verified (re-run ./bootstrap from a reviewed checkout)')
         elif [[ $mgr_sha == "${R[tuk:sha]}" ]]; then mgr_state=verified
         else mgr_state=modified; bad=1; notes+=('tuk: manager differs from its installation record'); fi
         printf '%-10s %-9s %-18s %s\n' tuk "${R[tuk:ver]:--}" "$mgr_state" "$mgr_sha"
+    elif [[ -n ${R[tuk:sha]:-} ]]; then
+        bad=1
+        printf '%-10s %-9s %-18s %s\n' tuk "${R[tuk:ver]:--}" missing -
+        notes+=("tuk: recorded as installed at ${R[tuk:path]} but that file is gone; this copy is running from elsewhere (re-run ./bootstrap from a reviewed checkout)")
     else
         printf '%-10s %-9s %-18s %s\n' tuk - not-installed -
     fi
@@ -774,6 +788,9 @@ cmd_doctor() {
     else
         doctor_ok 'no installation record yet'
     fi
+    if (( rec_ok )) && [[ -n ${R[tuk:sha]:-} && ! -e $BIN_DIR/tuk && ! -L $BIN_DIR/tuk ]]; then
+        doctor_bad "the manager is recorded as installed at ${R[tuk:path]} but that file is gone"
+    fi
     if (( cat_ok )); then
         for n in "${PKG_NAMES[@]}"; do
             if (( rec_ok )); then
@@ -805,10 +822,11 @@ Commands:
                           Install approved tools. Never overwrites an existing
                           command; --dry-run prints what would be fetched.
   status                  Show installed tools, hashes and any drift.
-                          Exit 0: nothing is modified or missing and the manager
-                          has an installation record. Exit 1: a tool or the
-                          manager is modified or missing, or the manager has no
-                          record. unmanaged, outdated and unsupported tools are
+                          Exit 0: no tool is modified or missing, and the manager
+                          is verified (or was never installed, e.g. running from a
+                          checkout). Exit 1: a tool or the manager is modified or
+                          missing, or the installed manager has no record.
+                          unmanaged, outdated and unsupported tools are
                           informational and do not change the exit status.
   doctor                  Read-only checks of prerequisites, catalogue and record.
   --version, --help

@@ -105,9 +105,12 @@ example one you installed by hand, even if byte-identical); `unsupported`
 (OS/architecture) and `missing-dependency`.
 
 `tuk status` exit status: **0** when no tool is `modified` or `missing` and the
-manager is `verified` (or is not installed because you are running from a
-checkout); **1** when a tool or the manager is `modified` or `missing`, or the
-installed manager has no installation record (its integrity cannot be verified).
+manager is `verified`, or was never installed (no record, no file: you are running
+from a checkout); **1** when a tool or the manager is `modified` or `missing`, or
+the installed manager has no installation record or its path is a symlink (its
+integrity cannot be verified). A manager that is *recorded* as installed but whose
+file is gone is `missing` (exit 1), even when `tuk` is being run from another
+location; a manager that was never installed is `not-installed` (exit 0).
 `unmanaged`, `outdated` and `unsupported` tools are informational and do not
 change the exit status.
 
