@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Install a verified public clip script from trusted local staging.
+# No downloads, no execution of the source, and no overwrites.
+set -euo pipefail
+
+version=1.1.0
+asset=clip-$version
+
+usage() {
+    printf '%s\n' 'Usage: install-clip SOURCE ABSOLUTE_DESTINATION_DIRECTORY' \
+        "Install clip $version as DESTINATION/clip at mode 0755." \
+        'SOURCE must match the adjacent SHA-256 manifest (1.1.0.sha256 or clip-1.1.0.sha256).' \
+        'Refuses existing files and symlinks; run from trusted private staging.'
+}
+fail() { printf 'install-clip: %s\n' "$*" >&2; exit 1; }
+trusted() {
+    local owner mode
+    read -r owner mode < <(stat -c '%u %a' -- "$1") || fail "cannot stat $1"
+    [[ $owner == 0 || $owner == "$EUID" ]] || fail "untrusted owner: $1"
+    (( (8#$mode & 8#022) == 0 )) || fail "group/other-writable: $1"
+}
+
+if (( $# == 1 )) && [[ $1 == -h || $1 == --help ]]; then usage; exit 0; fi
+if (( $# != 2 )); then usage >&2; exit 2; fi
+src=$1
+dest=$2
+
+[[ $(uname -s) == Linux ]] || fail 'Linux required'
+[[ $src != -* && $dest == /* ]] || fail 'source must not begin with "-"; destination must be absolute'
+[[ -f $src && ! -L $src ]] || fail 'source must be a regular, non-symlink file'
+[[ -d $dest ]] || fail 'destination directory does not exist'
+[[ $dest == "$(realpath -e -- "$dest")" ]] || fail 'use a canonical destination path (no symlinks or trailing slash)'
+[[ ! -e $dest/clip && ! -L $dest/clip ]] || fail "$dest/clip already exists; do not overwrite"
+
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+# Accept exactly one manifest: 1.1.0.sha256 (Git) or clip-1.1.0.sha256 (Release).
+# If both exist the choice would be ambiguous, so refuse rather than pick one.
+m_git=$here/$version.sha256
+m_rel=$here/$asset.sha256
+if [[ -e $m_git || -L $m_git ]] && [[ -e $m_rel || -L $m_rel ]]; then
+    fail "both $version.sha256 and $asset.sha256 exist; keep exactly one"
+fi
+if [[ -e $m_git || -L $m_git ]]; then manifest=$m_git; else manifest=$m_rel; fi
+[[ -f $manifest && ! -L $manifest ]] || fail 'manifest missing or symlinked'
+trusted "$here"; trusted "$manifest"
+trusted "$(dirname -- "$(realpath -e -- "$src")")"; trusted "$src"
+trusted "$dest"
+(( $(wc -l < "$manifest") == 1 )) || fail 'manifest must have one line'
+read -r expected filename extra < "$manifest"
+[[ $expected =~ ^[0-9a-f]{64}$ && -z $extra && $filename == "$asset" ]] || fail 'invalid manifest'
+
+tmp=$(mktemp -- "$dest/.clip.XXXXXXXX")
+trap 'rm -f -- "$tmp"' EXIT
+cp -- "$src" "$tmp"
+actual=$(sha256sum -- "$tmp")
+[[ ${actual%% *} == "$expected" ]] || fail 'checksum mismatch; nothing installed'
+chmod 0755 -- "$tmp"
+ln -T -- "$tmp" "$dest/clip" || fail 'installation refused (target appeared)'
+trap '' PIPE
+printf 'Installed clip %s at %s/clip\nSHA-256 %s\n' "$version" "$dest" "$expected" 2>/dev/null || true
+exit 0
