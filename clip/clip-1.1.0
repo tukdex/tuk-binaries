@@ -44,7 +44,7 @@ send_osc52() {
 # variable, so NUL bytes survive) through one merged stream, and is shown
 # live. The file is removed on every exit path.
 run_mode() {
-    local quiet=0 max blocks out size encoded problem='' cmd_status tee_status st
+    local quiet=0 max blocks out size encoded problem='' cmd_status tee_status cat_status st
     while (( $# )); do
         case $1 in
             --quiet) quiet=1; shift ;;
@@ -74,24 +74,28 @@ run_mode() {
 
     # exec runs an external program with the exact argument vector: no shell
     # parsing, no function or builtin lookalikes, and an exec failure message
-    # lands in the captured stream. tee ignores the termination signals so it
-    # drains whatever the command wrote; ulimit -f stops a runaway command
-    # from filling the disk (SIGXFSZ is ignored so tee sees EFBIG and reports).
+    # lands in the captured stream. Stage 2 (tee) keeps the capture file; its
+    # ulimit -f stops a runaway command from filling the disk. The limit applies
+    # to every regular file the process writes, so tee's stdout is a pipe and
+    # stage 3 (cat, no limit) delivers the output to the real stdout in full.
+    # tee and cat ignore the termination signals so they drain whatever the
+    # command wrote; SIGXFSZ is ignored so tee sees EFBIG and reports it.
     set +e
     ( exec -- "$@" ) 2>&1 |
         (
             trap '' INT TERM HUP XFSZ
             ulimit -f "$blocks" 2>/dev/null
-            if (( quiet )); then
-                exec tee --output-error=warn-nopipe -- "$out" > /dev/null
-            else
-                exec tee --output-error=warn-nopipe -- "$out"
-            fi
+            exec tee --output-error=warn-nopipe -- "$out" 2>/dev/null
+        ) |
+        (
+            trap '' INT TERM HUP
+            if (( quiet )); then exec cat > /dev/null; else exec cat; fi
         )
     st=("${PIPESTATUS[@]}")
     set -e
     cmd_status=${st[0]}
     tee_status=${st[1]}
+    cat_status=${st[2]}
 
     if ! size=$(stat -c %s -- "$out"); then
         problem='cannot read captured output'
@@ -109,6 +113,11 @@ run_mode() {
     fi
     if [[ -n $problem ]]; then
         note "$problem; clipboard was not set"
+    fi
+    # cat dies of SIGPIPE (141) when stdout is closed early; that is not an error.
+    if (( cat_status != 0 && cat_status != 141 )); then
+        note 'could not write all output to stdout'
+        problem=${problem:-stdout}
     fi
 
     if (( cmd_status != 0 )); then

@@ -70,8 +70,8 @@ pins 1.0.0 until 1.1.0 is reviewed and published. After release, verify these
 files from `clip/` (the installer is `install-clip-1.1.0` in Git, `install-clip`
 as a release asset) against checksums you obtained independently:
 
-    863e2d21b15896da5d2804dce34be78a270436f612a380462ab9df3e650774d6  clip-1.1.0
-    13a5294330817e69d8dadbf414f9d71462211ba25168cf14a2c5ff5c4b1f0142  1.1.0.sha256
+    03e390278546cb47c1ead097ac3d4488153095d1607b540cc92d0b24c7e3bc16  clip-1.1.0
+    4b83344e0330a0e462542e6395a2e222a23b48a9ff850cc474828cdfef61cff0  1.1.0.sha256
     e8f14a93d830587fca1511c5bf798fe291f5f2783b3b8ca46c2cbd7b9aa9581c  LICENSE.md
     dabcf60a9333b2f93cab866547bfd8e4b6db3ea3c4d7fa01dcaa71e6405d4522  install-clip-1.1.0
 
@@ -128,8 +128,9 @@ status, without depending on `set -o pipefail`.
 - **Size limit.** Output larger than `CLIP_MAX_BYTES` (default 75000 bytes, i.e.
   100000 Base64 characters) is displayed in full but not copied, and Clip says
   so. Raise the limit only if your terminal accepts larger OSC 52 payloads. The
-  temporary file is capped just above the limit, so a runaway command cannot fill
-  the disk through Clip. Piped mode (`| clip`) has no limit.
+  temporary capture file is capped just above the limit, so a runaway command
+  cannot fill the disk through Clip. The cap never affects what is forwarded: stdout,
+  including a redirected file or a pipe, always receives the complete output. Piped mode (`| clip`) has no limit.
 - **Error text.** If COMMAND cannot be executed, the shell's message
   (`...: exec: NAME: not found`, `Permission denied`) is part of the captured
   output and names Clip's script path.
