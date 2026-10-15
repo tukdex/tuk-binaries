@@ -1,10 +1,20 @@
-# clip 1.0.0 (Linux)
+# clip (Linux)
+
+**Current release: [clip 1.1.0](https://github.com/tukdex/tuk-binaries/releases/tag/clip-v1.1.0)**
+(adds `clip run`; see [clip 1.1.0](#clip-110-released-as-clip-v110) below). The clip 1.0.0
+releases remain available unchanged. A new installation can use the 1.1.0 release
+directly. Nothing upgrades an existing installation automatically, and the installers
+never overwrite an existing `clip`. The `tuk` package catalogue pins 1.1.0 only on its
+unmerged review branches; the `tuk` manager itself is not yet merged or generally released,
+so use the release assets directly until it is.
+
+The sections below headed "1.0.0" describe the previous release exactly as published.
 
 Standalone MIT-licensed Bash script for terminal clipboard support through OSC 52.
 This public package contains only the generic source, installer, checksum and
 licence; no private infrastructure configuration or operational data.
 
-## Usage
+## Usage (1.0.0)
 
     command | clip            # print the original output and copy it
     command | clip --quiet    # copy only (the old default)
@@ -17,7 +27,7 @@ acceptance cannot be confirmed; terminal and multiplexer settings or size
 limits may prevent it. Requires Linux, Bash and GNU base64 (-w0 and --decode).
 Clipboard content is never redacted: avoid copying sensitive output.
 
-## Public installation
+## Installing 1.0.0 (previous release)
 
 Review the SHA-256 pins independently. As root, download to a protected
 temporary directory and verify ALL files before running any downloaded code.
@@ -48,9 +58,9 @@ terminal: printf 'clipboard test\n' | clip. Check type -a clip before install.
 The installer refuses symlinks and existing destinations, enforces trusted
 staging permissions and checksum, and never executes the payload itself.
 
-## GitHub Release
+## GitHub Releases for 1.0.0
 
-Current: [clip-v1.0.0-r2](https://github.com/tukdex/tuk-binaries/releases/tag/clip-v1.0.0-r2)
+Latest 1.0.0 release: [clip-v1.0.0-r2](https://github.com/tukdex/tuk-binaries/releases/tag/clip-v1.0.0-r2)
 with four assets: clip-1.0.0; clip-1.0.0.sha256 (copy of 1.0.0.sha256);
 clip-1.0.0-LICENSE.md (copy of LICENSE.md); and install-clip. The clip script is
 byte-identical to 1.0.0 (SHA-256 above); r2 only corrects the installer, which now
@@ -62,22 +72,55 @@ superseded: its installer only accepts 1.0.0.sha256, so its manifest asset neede
 renaming. Its assets are left unchanged; use r2. Release assets are never
 replaced in place; a correction gets a new revision tag.
 
-## clip 1.1.0 (prepared, not yet released)
+## clip 1.1.0 (released as clip-v1.1.0)
 
-Adds `clip run` for capturing command output including stderr. Piped mode is
-unchanged. The 1.0.0 files and release above are unchanged; the Tuk catalogue
-pins 1.0.0 until 1.1.0 is reviewed and published. After release, verify these
-files from `clip/` (the installer is `install-clip-1.1.0` in Git, `install-clip`
-as a release asset) against checksums you obtained independently:
+Published release: [clip-v1.1.0](https://github.com/tukdex/tuk-binaries/releases/tag/clip-v1.1.0),
+tagged at the reviewed public merge commit 96274e8a3d19c87ec7fe68c76b1b2beab6b657e1.
+Assets (names, sizes, SHA-256):
 
-    03e390278546cb47c1ead097ac3d4488153095d1607b540cc92d0b24c7e3bc16  clip-1.1.0
-    4b83344e0330a0e462542e6395a2e222a23b48a9ff850cc474828cdfef61cff0  1.1.0.sha256
-    e8f14a93d830587fca1511c5bf798fe291f5f2783b3b8ca46c2cbd7b9aa9581c  LICENSE.md
-    dabcf60a9333b2f93cab866547bfd8e4b6db3ea3c4d7fa01dcaa71e6405d4522  install-clip-1.1.0
+| Release asset | Git source (in tuk-binaries) | Bytes | SHA-256 |
+|---|---|---|---|
+| clip-1.1.0 | clip/clip-1.1.0 | 6280 | 03e390278546cb47c1ead097ac3d4488153095d1607b540cc92d0b24c7e3bc16 |
+| clip-1.1.0.sha256 | clip/1.1.0.sha256 | 77 | 4b83344e0330a0e462542e6395a2e222a23b48a9ff850cc474828cdfef61cff0 |
+| clip-1.1.0-LICENSE.md | clip/LICENSE.md | 1063 | e8f14a93d830587fca1511c5bf798fe291f5f2783b3b8ca46c2cbd7b9aa9581c |
+| install-clip | clip/install-clip-1.1.0 | 2840 | dabcf60a9333b2f93cab866547bfd8e4b6db3ea3c4d7fa01dcaa71e6405d4522 |
 
-Install exactly as for 1.0.0 (staging, verification, no overwrite), with
-`bash install-clip-1.1.0 clip-1.1.0 /usr/local/bin`. Requires GNU `tee`,
-`mktemp` and `stat` (GNU coreutils) as well as `base64`.
+The 1.0.0 files and releases clip-v1.0.0 and clip-v1.0.0-r2 are unchanged
+(clip-v1.0.0-r2 remains GitHub's "Latest"). The 1.1.0 installer is install-clip with
+only the version changed. It is stored in Git as install-clip-1.1.0 so the 1.0.0
+installer's pinned hash stays valid, and is attached to the release as install-clip.
+Anonymous downloads were verified against the table, and the installer works with the
+release-style manifest name clip-1.1.0.sha256.
+
+### Install on a fresh Debian VM
+
+Run as root. The installer never overwrites, so it cannot upgrade an installed clip;
+move an old one aside first. Compare the hashes with values you obtained independently
+(for example this table or a reviewed commit), not only the ones in the downloaded files.
+
+```sh
+(
+set -euo pipefail; umask 077
+[ "$(id -u)" = 0 ] || { echo 'run as root' >&2; exit 1; }
+stage=$(mktemp -d /root/clip-stage.XXXXXX); cd "$stage"
+u=https://github.com/tukdex/tuk-binaries/releases/download/clip-v1.1.0
+for f in clip-1.1.0 clip-1.1.0.sha256 clip-1.1.0-LICENSE.md install-clip; do
+  curl --proto '=https' --tlsv1.2 -fSLo "$f" "$u/$f"
+done
+sha256sum -c - <<'SUMS'
+03e390278546cb47c1ead097ac3d4488153095d1607b540cc92d0b24c7e3bc16  clip-1.1.0
+4b83344e0330a0e462542e6395a2e222a23b48a9ff850cc474828cdfef61cff0  clip-1.1.0.sha256
+e8f14a93d830587fca1511c5bf798fe291f5f2783b3b8ca46c2cbd7b9aa9581c  clip-1.1.0-LICENSE.md
+dabcf60a9333b2f93cab866547bfd8e4b6db3ea3c4d7fa01dcaa71e6405d4522  install-clip
+SUMS
+bash install-clip clip-1.1.0 /usr/local/bin
+printf 'Staging retained: %s\n' "$stage"
+)
+```
+
+Verify with clip --version, then in an OSC 52 terminal run printf 'clipboard test\n' | clip
+and clip run -- sh -c 'echo out; echo err >&2'. The Tuk bootstrap catalogue pins this
+release only on its unmerged draft review branches, so tuk does not install 1.1.0 yet.
 
 ### clip 1.1.0 usage
 
