@@ -61,3 +61,96 @@ clip-1.0.0.sha256 and refuses if both exist. Release installs need no renaming.
 superseded: its installer only accepts 1.0.0.sha256, so its manifest asset needed
 renaming. Its assets are left unchanged; use r2. Release assets are never
 replaced in place; a correction gets a new revision tag.
+
+## clip 1.1.0 (prepared, not yet released)
+
+Adds `clip run` for capturing command output including stderr. Piped mode is
+unchanged. The 1.0.0 files and release above are unchanged; the Tuk catalogue
+pins 1.0.0 until 1.1.0 is reviewed and published. After release, verify these
+files from `clip/` (the installer is `install-clip-1.1.0` in Git, `install-clip`
+as a release asset) against checksums you obtained independently:
+
+    03e390278546cb47c1ead097ac3d4488153095d1607b540cc92d0b24c7e3bc16  clip-1.1.0
+    4b83344e0330a0e462542e6395a2e222a23b48a9ff850cc474828cdfef61cff0  1.1.0.sha256
+    e8f14a93d830587fca1511c5bf798fe291f5f2783b3b8ca46c2cbd7b9aa9581c  LICENSE.md
+    dabcf60a9333b2f93cab866547bfd8e4b6db3ea3c4d7fa01dcaa71e6405d4522  install-clip-1.1.0
+
+Install exactly as for 1.0.0 (staging, verification, no overwrite), with
+`bash install-clip-1.1.0 clip-1.1.0 /usr/local/bin`. Requires GNU `tee`,
+`mktemp` and `stat` (GNU coreutils) as well as `base64`.
+
+### clip 1.1.0 usage
+
+    command | clip                 # print stdout and copy it (stderr is NOT captured)
+    command |& clip                # Bash shortcut for 2>&1: copy stdout and stderr
+    command | clip --quiet         # copy only
+    clip run -- COMMAND [ARGS...]  # run COMMAND, show and copy stdout+stderr
+    clip run --quiet -- COMMAND [ARGS...]
+    clip --version                 # clip 1.1.0
+    clip --help
+
+Examples:
+
+    clip run -- ls -la /tmp
+    clip run -- git status
+    clip run -- bash -c 'echo normal; echo error >&2; exit 42'   # clip exits 42
+
+`command | clip` only sees stdout: when a command fails and writes its
+diagnostic to stderr, clip receives nothing to copy. In Bash, `|&` already
+fixes that. `clip run` does the same and also returns the command's own exit
+status, without depending on `set -o pipefail`.
+
+#### How `clip run` behaves
+
+- **Direct execution.** COMMAND and its arguments are passed as an argument
+  vector to `exec`. No shell parses them, so spaces, quotes and metacharacters
+  are ordinary bytes. Because the command is `exec`ed, shell functions and
+  builtins are never used (`clip run -- echo` runs the external `echo`). Name a
+  shell explicitly (`bash -c '...'`) if you want one. The `--` is required.
+- **One merged stream.** stderr is redirected to stdout (`2>&1`) before capture,
+  so the display and the copy contain the writes in the order they reached the
+  merged stream. Many programs buffer stdout when it is not a terminal, so the
+  observable order can differ from what you see when they run on a terminal.
+- **Bytes preserved.** Output goes through `tee` into a private (mode 0600)
+  temporary file created by `mktemp` in `$TMPDIR` (default `/tmp`), never into
+  a shell variable, so NUL bytes, binary data, Unicode and trailing newlines
+  survive. The file is deleted on normal exit and after SIGINT, SIGTERM or
+  SIGHUP. Output is not logged anywhere else.
+- **Live display.** Output appears while the command runs. `--quiet` suppresses
+  this echo only; Clip's own diagnostics on stderr are never suppressed.
+- **stdin** is not touched and is inherited by the command. The command's
+  stdout and stderr are pipes, so programs that need a terminal for output
+  (pagers, editors, `top`, `ssh -t`) may behave differently or not work; run
+  those directly. A background process that keeps the output open delays
+  completion.
+- **Empty output** leaves the clipboard unchanged (an empty OSC 52 payload would
+  clear it); Clip says so on stderr unless `--quiet` is given.
+- **Size limit.** Output larger than `CLIP_MAX_BYTES` (default 75000 bytes, i.e.
+  100000 Base64 characters) is displayed in full but not copied, and Clip says
+  so. Raise the limit only if your terminal accepts larger OSC 52 payloads. The
+  temporary capture file is capped just above the limit, so a runaway command
+  cannot fill the disk through Clip. The cap never affects what is forwarded: stdout,
+  including a redirected file or a pipe, always receives the complete output. Piped mode (`| clip`) has no limit.
+- **Error text.** If COMMAND cannot be executed, the shell's message
+  (`...: exec: NAME: not found`, `Permission denied`) is part of the captured
+  output and names Clip's script path.
+
+#### Exit status of `clip run`
+
+| Command | Clipboard | Exit status |
+|---|---|---|
+| exits 0 | delivered | 0 |
+| exits N (nonzero) | delivered | N |
+| exits 0 | failed or refused | 125 and a `clip:` diagnostic on stderr |
+| exits N (nonzero) | failed or refused | N and a `clip:` diagnostic on stderr |
+
+Statuses follow the shell: 127 command not found, 126 cannot execute (permission
+denied, or a directory), 128+N when the command is killed by signal N. A command
+that itself exits 125 cannot be told apart from a Clip failure by status alone;
+read stderr. Usage errors and an invalid `CLIP_MAX_BYTES` exit 2 and run nothing.
+Clip prints "clipboard was not set" whenever it did not write the OSC 52 sequence;
+a written sequence still cannot prove the terminal accepted it.
+
+Ctrl-C reaches both the command and Clip. Clip then still copies whatever the
+command produced and returns its status (usually 130). A signal sent to Clip's
+process alone is acted on only after the command finishes.
