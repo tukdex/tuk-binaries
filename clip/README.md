@@ -1,10 +1,20 @@
-# clip 1.0.0 (Linux)
+# clip (Linux)
+
+**Current release: [clip 1.1.0](https://github.com/tukdex/tuk-binaries/releases/tag/clip-v1.1.0)**
+(adds `clip run`; see [clip 1.1.0](#clip-110-released-as-clip-v110) below). The clip 1.0.0
+releases remain available unchanged. A new installation can use the 1.1.0 release
+directly. Nothing upgrades an existing installation automatically, and the installers
+never overwrite an existing `clip`. The `tuk` package catalogue pins 1.1.0 only on its
+unmerged review branches; the `tuk` manager itself is not yet merged or generally released,
+so use the release assets directly until it is.
+
+The sections below headed "1.0.0" describe the previous release exactly as published.
 
 Standalone MIT-licensed Bash script for terminal clipboard support through OSC 52.
 This public package contains only the generic source, installer, checksum and
 licence; no private infrastructure configuration or operational data.
 
-## Usage
+## Usage (1.0.0)
 
     command | clip            # print the original output and copy it
     command | clip --quiet    # copy only (the old default)
@@ -17,7 +27,7 @@ acceptance cannot be confirmed; terminal and multiplexer settings or size
 limits may prevent it. Requires Linux, Bash and GNU base64 (-w0 and --decode).
 Clipboard content is never redacted: avoid copying sensitive output.
 
-## Public installation
+## Installing 1.0.0 (previous release)
 
 Review the SHA-256 pins independently. As root, download to a protected
 temporary directory and verify ALL files before running any downloaded code.
@@ -48,9 +58,9 @@ terminal: printf 'clipboard test\n' | clip. Check type -a clip before install.
 The installer refuses symlinks and existing destinations, enforces trusted
 staging permissions and checksum, and never executes the payload itself.
 
-## GitHub Release
+## GitHub Releases for 1.0.0
 
-Current: [clip-v1.0.0-r2](https://github.com/tukdex/tuk-binaries/releases/tag/clip-v1.0.0-r2)
+Latest 1.0.0 release: [clip-v1.0.0-r2](https://github.com/tukdex/tuk-binaries/releases/tag/clip-v1.0.0-r2)
 with four assets: clip-1.0.0; clip-1.0.0.sha256 (copy of 1.0.0.sha256);
 clip-1.0.0-LICENSE.md (copy of LICENSE.md); and install-clip. The clip script is
 byte-identical to 1.0.0 (SHA-256 above); r2 only corrects the installer, which now
