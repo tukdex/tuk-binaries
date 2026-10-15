@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copy stdin, or the combined output of a command, to an OSC 52 terminal clipboard.
+set -euo pipefail
+
+version=1.1.0
+# Largest captured output (bytes) that `clip run` copies. 75000 bytes encode to
+# 100000 Base64 characters, a size most OSC 52 terminals are known to accept.
+default_max=75000
+# Exit status of `clip run` when the command succeeded but Clip itself failed;
+# the value 125 follows env(1) and timeout(1). Usage errors exit 2.
+clip_error=125
+
+usage() {
+    printf '%s\n' 'Usage: command | clip [--quiet]' \
+        '       clip run [--quiet] -- COMMAND [ARGS...]' \
+        'Print output and copy it through OSC 52 to the controlling terminal.' \
+        '  --quiet    Copy without printing the output.' \
+        '  -h, --help Show help; do not read stdin.' \
+        '  --version  Print the version; do not read stdin.' \
+        '' \
+        'Examples:' \
+        '  cmd   | clip              copy stdout only (stderr is not captured)' \
+        '  cmd  |& clip              copy stdout and stderr (Bash shortcut for 2>&1)' \
+        '  clip run -- cmd ARGS      run cmd directly, copy stdout+stderr, return its status' \
+        '' \
+        'clip run executes COMMAND without a shell, merges stderr into stdout, and' \
+        'returns the command'\''s exit status. If only the clipboard step fails it' \
+        'returns 125; if both fail, the command'\''s status plus a "clip:" diagnostic.' \
+        'Output over CLIP_MAX_BYTES (default 75000) is shown but not copied.' \
+        'Requires Bash, GNU coreutils (base64, tee) and a controlling terminal (/dev/tty).'
+}
+
+note() { printf 'clip: %s\n' "$*" >&2; }
+
+# Write the OSC 52 sequence for an already Base64-encoded payload to the
+# controlling terminal, never to stdout (which may be redirected or piped).
+send_osc52() {
+    printf '\033]52;c;%s\a' "$1" > /dev/tty
+}
+
+# clip run [--quiet] -- COMMAND [ARGS...]
+# The command output goes straight to a 0600 temporary file (never a shell
+# variable, so NUL bytes survive) through one merged stream, and is shown
+# live. The file is removed on every exit path.
+run_mode() {
+    local quiet=0 max blocks out size encoded problem='' cmd_status tee_status st
+    while (( $# )); do
+        case $1 in
+            --quiet) quiet=1; shift ;;
+            -h|--help) usage; exit 0 ;;
+            --) shift; break ;;
+            *) usage >&2; exit 2 ;;
+        esac
+    done
+    (( $# )) || { usage >&2; exit 2; }
+
+    max=${CLIP_MAX_BYTES:-$default_max}
+    if [[ ! $max =~ ^[1-9][0-9]{0,11}$ ]]; then
+        note 'CLIP_MAX_BYTES must be a positive integer; command not run'
+        exit 2
+    fi
+    blocks=$(( (max + 1023) / 1024 + 1 ))   # ulimit -f unit is 1024 bytes
+
+    out=$(mktemp -- "${TMPDIR:-/tmp}/clip.XXXXXXXX") || {
+        note 'cannot create temporary file; command not run'
+        exit "$clip_error"
+    }
+    trap 'rm -f -- "$out"' EXIT
+    # A signal delivered to the foreground process group reaches the command
+    # too. Keep going afterwards so partial output is still copied; the
+    # command's own status (128+signal when it was killed) is returned.
+    trap : INT TERM HUP
+
+    # exec runs an external program with the exact argument vector: no shell
+    # parsing, no function or builtin lookalikes, and an exec failure message
+    # lands in the captured stream. tee ignores the termination signals so it
+    # drains whatever the command wrote; ulimit -f stops a runaway command
+    # from filling the disk (SIGXFSZ is ignored so tee sees EFBIG and reports).
+    set +e
+    ( exec -- "$@" ) 2>&1 |
+        (
+            trap '' INT TERM HUP XFSZ
+            ulimit -f "$blocks" 2>/dev/null
+            if (( quiet )); then
+                exec tee --output-error=warn-nopipe -- "$out" > /dev/null
+            else
+                exec tee --output-error=warn-nopipe -- "$out"
+            fi
+        )
+    st=("${PIPESTATUS[@]}")
+    set -e
+    cmd_status=${st[0]}
+    tee_status=${st[1]}
+
+    if ! size=$(stat -c %s -- "$out"); then
+        problem='cannot read captured output'
+    elif (( size > max )); then
+        problem="output exceeds CLIP_MAX_BYTES ($max bytes)"
+    elif (( tee_status != 0 )); then
+        problem='could not capture all output'
+    elif (( size == 0 )); then
+        # An empty OSC 52 payload would clear the clipboard; leave it alone.
+        (( quiet )) || note 'no output; clipboard unchanged'
+    elif ! encoded=$(base64 -w0 < "$out"); then
+        problem='cannot encode output'
+    elif ! send_osc52 "$encoded" 2>/dev/null; then
+        problem='cannot write to /dev/tty'
+    fi
+    if [[ -n $problem ]]; then
+        note "$problem; clipboard was not set"
+    fi
+
+    if (( cmd_status != 0 )); then
+        exit "$cmd_status"
+    fi
+    [[ -z $problem ]] || exit "$clip_error"
+    exit 0
+}
+
+if (( $# >= 1 )) && [[ $1 == run ]]; then
+    shift
+    run_mode "$@"
+fi
+
+quiet=0
+if (( $# == 1 )); then
+    case $1 in
+        -h|--help) usage; exit 0 ;;
+        --version) printf 'clip %s\n' "$version"; exit 0 ;;
+        --quiet) quiet=1 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+elif (( $# != 0 )); then
+    usage >&2
+    exit 2
+fi
+
+# The encoded form can contain NULs and trailing newlines in its source. Retain
+# the exact bytes by decoding it for stdout; do not store raw stdin in a shell
+# variable. No clipboard sequence is emitted if encoding or printing fails.
+encoded=$(base64 -w0)
+if (( ! quiet )); then
+    printf '%s' "$encoded" | base64 --decode
+fi
+
+# In a noninteractive context, stdout has already been reproduced, but copying
+# cannot work without a controlling terminal: fail visibly instead of lying.
+if ! send_osc52 "$encoded" 2>/dev/null; then
+    printf '%s\n' 'clip: cannot write to /dev/tty; clipboard was not set' >&2
+    exit 1
+fi
